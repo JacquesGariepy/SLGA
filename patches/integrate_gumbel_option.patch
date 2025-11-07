@@ -1,0 +1,90 @@
+--- Integration Patch: Gumbel Option for Landmark Selection ---
+
+This patch adds the `use_gumbel` option to SLGA training configuration.
+
+Apply this patch to enable:
+1. Gumbel-Softmax selection (recommended for from-scratch training)
+2. Improved straight-through estimator (for fine-tuning)
+
+=== File: config/config.yaml ===
+
+Add under `model:` section:
+
+  landmark:
+    use_gumbel: true  # Use Gumbel-Softmax (recommended for stability)
+    # Alternative: false for faster straight-through estimator
+
+=== File: src/slga.py ===
+
+In SLGAModel.__init__(), add config parameter:
+
+  def __init__(self, config):
+      ...
+      self.landmark_use_gumbel = config.get('landmark', {}).get('use_gumbel', True)
+      ...
+
+In SLGAModel.forward(), when calling landmark selector:
+
+  # OLD:
+  landmark_indices, landmark_states, selection_scores = self.landmark_selector(x)
+
+  # NEW:
+  landmark_indices, landmark_states, selection_scores = self.landmark_selector(
+      x,
+      use_gumbel=self.landmark_use_gumbel
+  )
+
+=== File: scripts/train.py ===
+
+Add command-line argument:
+
+  parser.add_argument(
+      '--landmark-use-gumbel',
+      action='store_true',
+      default=True,
+      help='Use Gumbel-Softmax for landmark selection (recommended)'
+  )
+  parser.add_argument(
+      '--no-landmark-use-gumbel',
+      action='store_false',
+      dest='landmark_use_gumbel',
+      help='Use straight-through estimator (faster but less stable)'
+  )
+
+Pass to config:
+
+  if args.landmark_use_gumbel is not None:
+      config.setdefault('landmark', {})['use_gumbel'] = args.landmark_use_gumbel
+
+=== Example Usage ===
+
+# Default (Gumbel, recommended)
+python scripts/train.py --config config/config.yaml
+
+# Explicit Gumbel
+python scripts/train.py --config config/config.yaml --landmark-use-gumbel
+
+# Straight-through (faster)
+python scripts/train.py --config config/config.yaml --no-landmark-use-gumbel
+
+=== Verification ===
+
+After integration, verify with:
+
+  python -c "
+  import yaml
+  with open('config/config.yaml') as f:
+      cfg = yaml.safe_load(f)
+  print(f\"Landmark use_gumbel: {cfg.get('landmark', {}).get('use_gumbel', 'NOT SET')}\")
+  "
+
+Expected output: "Landmark use_gumbel: True"
+
+=== Rollback ===
+
+If issues arise, remove the `use_gumbel` parameter from config.yaml
+and the code will default to straight-through estimator.
+
+---
+END OF PATCH
+---

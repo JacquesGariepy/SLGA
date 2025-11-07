@@ -1,0 +1,225 @@
+# ==============================================================================
+# SLGA-Plus Configuration - 2x RTX 3090 (7B Parameters)
+# ==============================================================================
+# Hardware: 2x RTX 3090 (24GB each = 48GB total)
+# Model Size: ~7B parameters (similar to Llama-2 7B)
+# Training Strategy: Multi-GPU with DeepSpeed ZeRO-2
+# Expected Memory: ~44 GB total (92% utilization)
+# Training Speed: ~6-8 hours per 1K steps
+# ==============================================================================
+
+seed: 1234
+device: cuda
+
+model:
+  vocab_size: 50257
+  max_seq_len: 4096          # 🔧 2× longer context
+  embed_dim: 4096            # 🔧 SCALED UP: 512 → 4096 (8×)
+  num_heads: 32              # 🔧 SCALED UP: 8 → 32 (head_dim = 128)
+  ff_hidden_multiplier: 4
+  n_layers: 32               # 🔧 SCALED UP: 12 → 32
+  dropout_rate: 0.1
+
+  # Configuration attention locale-globale
+  local_window: 256          # 🔧 Larger window for 4K context
+  global_k: 64               # 🔧 More landmarks: 24 → 64
+  gated_fusion: true
+  learned_landmarks: true
+  dilated_windows: true
+  diverse_topk: true
+
+  landmark_selector:
+    temperature_decay: 0.9995   # Slower decay for larger model
+    min_temperature: 0.3
+    use_gumbel: false
+
+train:
+  # Curriculum progressif (4K context)
+  seq_len_start: 512
+  seq_len_mid: 2048
+  seq_len_final: 4096
+  seq_len_warmup_steps: 50000
+
+  # ============================================================================
+  # 2x RTX 3090 CONFIGURATION (48 GB total)
+  # ============================================================================
+  batch_size: 2              # 🔧 Per GPU: 2 samples
+  accum_steps: 32            # 🔧 Effective batch: 2 × 2 × 32 = 128
+
+  lr: 3.0e-4                 # 🔧 Higher LR for larger model
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  weight_decay: 0.1          # 🔧 Stronger regularization
+  warmup_steps: 10000        # 🔧 Longer warmup for 7B
+  max_steps: 500000          # 🔧 5× more steps for larger model
+  grad_clip: 1.0
+
+  # Memory optimizations (REQUIRED for 7B on 48GB)
+  amp: true
+  amp_dtype: "bf16"
+  grad_checkpointing: true   # 🔧 ESSENTIAL: saves ~30-40% memory
+  torch_compile: true
+
+  # DeepSpeed ZeRO-2 (required for multi-GPU)
+  deepspeed:
+    enabled: true
+    stage: 2                 # ZeRO-2: shard optimizer states
+    offload_optimizer: false # Keep on GPU (we have 48GB)
+    overlap_comm: true       # Overlap gradient communication
+    contiguous_gradients: true
+    gradient_clipping: 1.0
+
+  # Configuration collator
+  collator: "local"
+  global_every: 256
+  max_global: 128
+
+  # Loss auxiliaires
+  lambda_spacing: 0.01
+  lambda_sparsity: 0.001
+  lambda_diversity: 0.0
+
+  # Global attention warmup
+  global_warmup_start: 5000
+  global_warmup_end: 25000
+
+  # Sauvegarde et évaluation
+  save_every: 2000           # Every 2K steps (~12-16 hours)
+  eval_every: 1000
+  log_every: 100
+
+# ==============================================================================
+# DATASET: Full FineWeb-Edu (350B tokens recommended for 7B)
+# ==============================================================================
+data:
+  dataset: "HuggingFaceFW/fineweb-edu"
+  subset: "CC-MAIN-2024-10"  # 🔧 Use full dump, not sample
+  split_train: "train[:99%]"
+  split_val: "train[99%:]"
+  num_workers: 4
+  max_train_samples: null    # Use all data
+  max_val_samples: 20000
+
+tokenizer: "gpt2"
+
+save:
+  out_dir: "out_slga_7B"
+
+log:
+  wandb: true                # 🔧 RECOMMENDED for large runs
+  project: "slga-plus-7B"
+  run_name: "slga-7B-fineweb-350B"
+  tensorboard: true
+
+  tensorboard_metrics:
+    - gate_mean
+    - gate_std
+    - gate_sparsity
+    - spacing_mean
+    - spacing_std
+    - spacing_loss
+    - grad_norm_total
+    - grad_norm_gates
+    - grad_norm_attn
+    - memory_allocated
+    - memory_reserved
+    - memory_peak
+    - loss_lm
+    - loss_spacing
+    - loss_sparsity
+
+validation:
+  enabled: true
+  check_every: 500
+  fail_fast: true
+  check_gradients: true
+  gradient_threshold: 100.0
+  check_landmarks: true
+  max_landmark_ratio: 0.8
+  check_loss: true
+  max_loss_ratio: 10.0
+  min_loss: 0.01
+
+# ==============================================================================
+# EXPECTED PERFORMANCE (2x RTX 3090)
+# ==============================================================================
+# Model Parameters:    ~7B (6.8B exact)
+# Memory per GPU:      ~22 GB (92% of 24GB)
+# Total Memory:        ~44 GB
+# Training Speed:      ~40-60 tokens/sec/GPU → 80-120 tok/s total
+# Time per 1K steps:   ~6-8 hours
+# Total training:      500K steps = 3,000-4,000 hours (~125-166 days)
+# Tokens processed:    500K × 128 × 4096 = 262B tokens
+#
+# Optimizations enabled:
+# ✅ DeepSpeed ZeRO-2 (shard optimizer states across GPUs)
+# ✅ Gradient checkpointing (saves 30-40% memory)
+# ✅ BF16 mixed precision (2× faster, same quality)
+# ✅ Torch compile (10-20% speedup)
+# ✅ Gradient accumulation (large effective batch: 128)
+#
+# Scaling law prediction (Chinchilla optimal):
+# - 7B params → optimal dataset: ~140B tokens
+# - Training on 350B tokens → over-trained (better quality)
+# - Expected final PPL: ~8-12 (competitive with Llama-2 7B)
+# ==============================================================================
+
+# ==============================================================================
+# HOW TO RUN ON 2x RTX 3090
+# ==============================================================================
+# 1. Install DeepSpeed:
+#    pip install deepspeed
+#
+# 2. Create DeepSpeed config (ds_config_zero2.json):
+#    {
+#      "train_batch_size": 128,
+#      "train_micro_batch_size_per_gpu": 2,
+#      "gradient_accumulation_steps": 32,
+#      "optimizer": {
+#        "type": "AdamW",
+#        "params": {
+#          "lr": 3e-4,
+#          "betas": [0.9, 0.95],
+#          "eps": 1e-8,
+#          "weight_decay": 0.1
+#        }
+#      },
+#      "scheduler": {
+#        "type": "WarmupDecayLR",
+#        "params": {
+#          "warmup_min_lr": 0,
+#          "warmup_max_lr": 3e-4,
+#          "warmup_num_steps": 10000,
+#          "total_num_steps": 500000
+#        }
+#      },
+#      "fp16": {
+#        "enabled": false
+#      },
+#      "bf16": {
+#        "enabled": true
+#      },
+#      "zero_optimization": {
+#        "stage": 2,
+#        "offload_optimizer": {
+#          "device": "none"
+#        },
+#        "overlap_comm": true,
+#        "contiguous_gradients": true,
+#        "reduce_bucket_size": 5e8,
+#        "allgather_bucket_size": 5e8
+#      },
+#      "gradient_clipping": 1.0,
+#      "steps_per_print": 100,
+#      "wall_clock_breakdown": false
+#    }
+#
+# 3. Launch training:
+#    deepspeed --num_gpus=2 scripts/train.py \
+#      --config config/config_2x3090_7B.yaml \
+#      --deepspeed ds_config_zero2.json
+#
+# 4. Monitor with:
+#    tensorboard --logdir out_slga_7B/tensorboard
+#    wandb sync out_slga_7B/wandb
+# ==============================================================================

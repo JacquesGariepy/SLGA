@@ -1,0 +1,216 @@
+# ==============================================================================
+# SLGA-Plus V2 - Anti-Mode-Collapse Configuration
+# ==============================================================================
+# Changes from V1:
+#   - dropout_rate: 0.1 → 0.25 (CRITICAL: combat mode collapse)
+#   - weight_decay: 0.01 → 0.1 (+10× regularization)
+#   - label_smoothing: 0.0 → 0.1 (NEW: prevent overconfidence)
+#   - seq_len_warmup: 15000 → 7500 (2× faster curriculum)
+#   - batch_size: 14 → 18 (use more GPU)
+#   - accum_steps: 5 → 4 (maintain effective batch ~70)
+#   - eval_every: 250 → 500 (reduce overhead)
+# ==============================================================================
+
+seed: 1234
+device: cuda
+
+model:
+  vocab_size: 50257
+  max_seq_len: 2048
+  embed_dim: 512
+  num_heads: 8
+  ff_hidden_multiplier: 4
+  n_layers: 12
+  
+  # ============================================================================
+  # ANTI-MODE-COLLAPSE: Increased Dropout
+  # ============================================================================
+  dropout_rate: 0.25           # 🔧 CRITICAL: 0.1 → 0.25 (force diversity)
+
+  # Configuration attention locale-globale
+  local_window: 128
+  global_k: 24
+  gated_fusion: true
+  learned_landmarks: true
+  dilated_windows: true
+  diverse_topk: true
+
+  # ============================================================================
+  # LANDMARK SELECTOR (v1.1): Enhanced Configuration
+  # ============================================================================
+  landmark_selector:
+    temperature_decay: 0.999
+    min_temperature: 0.3
+    use_gumbel: false
+
+train:
+  # ============================================================================
+  # FASTER CURRICULUM: Reach full capacity sooner
+  # ============================================================================
+  seq_len_start: 384
+  seq_len_mid: 1024
+  seq_len_final: 2048
+  seq_len_warmup_steps: 7500   # 🔧 REDUCED: 15000 → 7500 (2× faster)
+
+  # ============================================================================
+  # INCREASED GPU UTILIZATION
+  # ============================================================================
+  batch_size: 18               # 🔧 INCREASED: 14 → 18 (better GPU usage)
+  accum_steps: 4               # 🔧 ADJUSTED: 5 → 4 (keep effective ~70)
+  # Effective batch: 18 × 4 = 72 (vs 70 before, +3%)
+
+  lr: 2.0e-4
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  
+  # ============================================================================
+  # ANTI-OVERFIT: Increased Regularization
+  # ============================================================================
+  weight_decay: 0.1            # 🔧 CRITICAL: 0.01 → 0.1 (+10× stronger)
+  label_smoothing: 0.1         # 🔧 NEW: Prevent overconfidence
+  
+  warmup_steps: 2000
+  max_steps: 100000
+  grad_clip: 1.0
+
+  # Optimisations mémoire/vitesse
+  amp: true
+  amp_dtype: "bf16"
+  grad_checkpointing: false
+  torch_compile: true
+
+  # Configuration collator
+  collator: "local"
+  global_every: 128
+  max_global: 64
+
+  # ============================================================================
+  # LOSS AUXILIAIRES (v1.1): Enhanced for Stability
+  # ============================================================================
+  lambda_spacing: 0.01
+  lambda_sparsity: 0.001
+  lambda_diversity: 0.0
+
+  # Phase de warmup du global attention
+  global_warmup_start: 1000
+  global_warmup_end: 7500
+
+  # ============================================================================
+  # MONITORING: Less Frequent Validation (Reduce Overhead)
+  # ============================================================================
+  save_every: 500
+  eval_every: 500              # 🔧 REDUCED: 250 → 500 (less overhead)
+  log_every: 50
+
+# ==============================================================================
+# FINEWEB-EDU DATASET CONFIGURATION
+# ==============================================================================
+data:
+  dataset: "data/mixed_balanced"
+  subset: "sample-10BT"
+  split_train: "train[:98%]"
+  split_val: "train[98%:]"
+  num_workers: 4               # 🔧 INCREASED: 2 → 4 (faster data loading)
+  max_train_samples: null
+  max_val_samples: 10000
+  
+  # ============================================================================
+  # DATA AUGMENTATION (Optional - Uncomment to Enable)
+  # ============================================================================
+  # preprocessing:
+  #   normalize_whitespace: true    # Clean up excessive newlines
+  #   max_consecutive_newlines: 2   # Limit \n\n\n+ sequences
+
+tokenizer: "gpt2"
+
+save:
+  out_dir: "out_slga_fineweb_v2"  # 🔧 NEW: Different output dir
+
+log:
+  wandb: false
+  project: "slga-plus-fineweb-v2"
+  run_name: "anti-collapse-from-4k"
+  tensorboard: true
+
+  tensorboard_metrics:
+    - gate_mean
+    - gate_std
+    - gate_sparsity
+    - spacing_mean
+    - spacing_std
+    - spacing_loss
+    - grad_norm_total
+    - grad_norm_gates
+    - grad_norm_attn
+    - memory_allocated
+    - memory_reservedc
+    - memory_peak
+    - loss_lm
+    - loss_spacing
+    - loss_sparsity
+    - loss_diversity
+    - collapse_score        # 🔧 NEW: Monitor mode collapse
+    - token_diversity       # 🔧 NEW: Monitor diversity
+
+# ==============================================================================
+# VALIDATION SYSTEM
+# ==============================================================================
+validation:
+  enabled: true
+  check_every: 100
+  fail_fast: true
+  check_gradients: true
+  gradient_threshold: 100.0
+  check_landmarks: true
+  max_landmark_ratio: 0.8
+  check_loss: true
+  max_loss_ratio: 10.0
+  min_loss: 0.01
+  
+  # ============================================================================
+  # ANTI-MODE-COLLAPSE CHECKS
+  # ============================================================================
+  check_mode_collapse: true      # 🔧 NEW: Check for token collapse
+  max_token_frequency: 0.25      # 🔧 NEW: Alert if token > 25%
+  min_diversity: 0.30            # 🔧 NEW: Alert if diversity < 30%
+
+# ==============================================================================
+# CHANGES SUMMARY - V1 → V2
+# ==============================================================================
+#
+# CRITICAL FIXES (Combat Mode Collapse):
+# ========================================
+# 1. dropout_rate: 0.1 → 0.25        (+150% regularization) 🔴 CRITICAL
+# 2. weight_decay: 0.01 → 0.1        (+900% regularization) 🔴 CRITICAL  
+# 3. label_smoothing: None → 0.1     (prevent overconfidence) 🔴 CRITICAL
+#
+# PERFORMANCE IMPROVEMENTS:
+# ========================
+# 4. batch_size: 14 → 18             (+29% per step)
+# 5. seq_len_warmup: 15000 → 7500    (2× faster curriculum)
+# 6. eval_every: 250 → 500           (50% less overhead)
+# 7. num_workers: 2 → 4              (faster data loading)
+#
+# MONITORING ENHANCEMENTS:
+# =======================
+# 8. Added collapse_score tracking
+# 9. Added token_diversity tracking
+# 10. Added mode collapse validation checks
+#
+# EXPECTED IMPACT:
+# ===============
+# @ Step 10k (from step 4k):
+#   - Mode collapse "water": 40% → <20%  ✅
+#   - Validation gap: 0.82 → <0.80       ✅
+#   - Token diversity: 49% → >60%        ✅
+#   - Training speed: +15% (less eval)   ✅
+#
+# @ Step 20k:
+#   - Mode collapse "water": <10%        ✅
+#   - Validation gap: <1.0               ✅
+#   - Can complete simple facts          ✅
+#
+# GPU Memory (RTX 3090 24GB):
+#   Training: ~22-23 GB (92-96%)         ✅ Still safe
+#   Validation: ~23-24 GB (96-100%)      ⚠️  Tight but OK
+# ==============================================================================

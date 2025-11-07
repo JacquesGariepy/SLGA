@@ -1,0 +1,115 @@
+================================================================================
+QUICK GENERATION PARAMETER TEST
+================================================================================
+
+📦 Loading from: out_slga_fineweb/ckpt_2000/model.pt
+✅ Model loaded: 12 layers, 512d, 8 heads
+
+================================================================================
+TESTING 7 CONFIGURATIONS x 3 PROMPTS x 100 TOKENS
+================================================================================
+
+
+🧪 baseline: temp=1.0, top_k=0, top_p=1.0, rep=1.0
+   P1: The future of artificial intelligence toward this breakthrou...
+       tok_div=0.781, word_div=0.853, bigram_div=0.981, time=29.39s
+   P2: In a small village of the bird Bill-s the East whateverari s...
+       tok_div=0.817, word_div=0.840, bigram_div=1.000, time=30.62s
+   P3: The scientist discovered the G yero ago DC his MajorProfesso...
+       tok_div=0.864, word_div=0.901, bigram_div=1.000, time=31.63s
+   📊 Avg: tok=0.821, word=0.865, bigram=0.994
+
+🧪 low_temp: temp=0.5, top_k=0, top_p=1.0, rep=1.0
+   P1: The future of artificial intelligence of the the But the of ...
+       tok_div=0.229, word_div=0.223, bigram_div=0.442, time=31.78s
+   P2: In a small village in the an the first in the the first the ...
+       tok_div=0.192, word_div=0.200, bigram_div=0.388, time=31.39s
+   P3: The scientist discovered in the the the the South, the De wa...
+       tok_div=0.184, word_div=0.180, bigram_div=0.324, time=32.97s
+   📊 Avg: tok=0.202, word=0.201, bigram=0.385
+
+🧪 high_temp: temp=1.2, top_k=0, top_p=1.0, rep=1.0
+   P1: The future of artificial intelligence of Drops, low Missouri...
+       tok_div=0.905, word_div=0.947, bigram_div=1.000, time=33.16s
+   P2: In a small village Charlie poisoning was cited between 11 ta...
+       tok_div=0.971, word_div=0.986, bigram_div=1.000, time=30.58s
+   P3: The scientist discovered most theftanalysis of through the A...
+       tok_div=0.932, word_div=0.958, bigram_div=1.000, time=32.40s
+   📊 Avg: tok=0.936, word=0.964, bigram=1.000
+
+🧪 top_k_40: temp=1.0, top_k=40, top_p=1.0, rep=1.0
+   P1: The future of artificial intelligence in the in the of the c...
+       tok_div=0.305, word_div=0.370, bigram_div=0.635, time=28.73s
+   P2: In a small village of a two. It is it to the first in the fi...
+       tok_div=0.385, word_div=0.506, bigram_div=0.874, time=30.00s
+   P3: The scientist discovered in the the The and the was the the ...
+       tok_div=0.350, word_div=0.398, bigram_div=0.843, time=30.13s
+   📊 Avg: tok=0.346, word=0.425, bigram=0.784
+
+🧪 top_p_0.9: temp=1.0, top_k=0, top_p=0.9, rep=1.0
+   P1: The future of artificial intelligence in the same "|
+1 - $||...
+       tok_div=0.505, word_div=0.700, bigram_div=0.875, time=30.27s
+   P2: In a small village has if it will researchers often not, tha...
+       tok_div=0.702, word_div=0.890, bigram_div=0.951, time=29.74s
+   P3: The scientist discovered with the rings Universityill Rolong...
+       tok_div=0.903, word_div=0.911, bigram_div=0.990, time=31.43s
+   📊 Avg: tok=0.703, word=0.834, bigram=0.939
+
+🧪 combined: temp=0.8, top_k=0, top_p=0.95, rep=1.0
+   P1: The future of artificial intelligence of place for education...
+       tok_div=0.286, word_div=0.431, bigram_div=0.442, time=27.97s
+   P2: In a small village, 6, local New forces in the principal of ...
+       tok_div=0.404, word_div=0.656, bigram_div=0.738, time=29.75s
+   P3: The scientist discovered the hydrogen was the state of the S...
+       tok_div=0.592, word_div=0.591, bigram_div=0.931, time=30.12s
+   📊 Avg: tok=0.427, word=0.559, bigram=0.704
+
+🧪 aggressive: temp=0.8, top_k=50, top_p=0.95, rep=1.5
+   P1: The future of artificial intelligence on the U. 1 at the Ame...
+       tok_div=0.667, word_div=0.802, bigram_div=0.971, time=30.07s
+   P2: In a small village.
+The first the of it on in one was to wer...
+       tok_div=0.788, word_div=0.862, bigram_div=0.990, time=30.28s
+   P3: The scientist discovered the British of the 17 War in the hi...
+       tok_div=0.641, word_div=0.649, bigram_div=0.971, time=31.21s
+   📊 Avg: tok=0.699, word=0.771, bigram=0.977
+
+================================================================================
+ANALYSIS & RECOMMENDATIONS
+================================================================================
+
+🏆 TOP 3 CONFIGURATIONS:
+
+1. high_temp (score: 0.9650)
+   Params: temp=1.2, top_k=0, top_p=1.0, rep=1.0
+   Token div: 0.936
+   Word div: 0.964
+   Bigram div: 1.000
+   Time: 32.05s
+
+2. baseline (score: 0.8880)
+   Params: temp=1.0, top_k=0, top_p=1.0, rep=1.0
+   Token div: 0.821
+   Word div: 0.865
+   Bigram div: 0.994
+   Time: 30.55s
+
+3. top_p_0.9 (score: 0.8196)
+   Params: temp=1.0, top_k=0, top_p=0.9, rep=1.0
+   Token div: 0.703
+   Word div: 0.834
+   Bigram div: 0.939
+   Time: 30.48s
+
+🔍 CONCLUSION:
+   Baseline diversity: 0.821
+   Best config diversity: 0.936
+   Improvement: +14.0%
+
+   ⚠️  Sampling strategies provide MODERATE improvement
+      Both training and sampling contribute to the issue
+
+💾 Results saved to: tests/generation_quick_results.json
+
+✨ Test complete!

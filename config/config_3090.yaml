@@ -1,0 +1,104 @@
+seed: 1234
+device: cuda
+
+model:
+  vocab_size: 50257
+  max_seq_len: 2048
+  embed_dim: 512              # Capacité augmentée pour meilleure performance
+  num_heads: 8                # Plus de têtes d'attention
+  ff_hidden_multiplier: 4     # FFN expansion standard
+  n_layers: 12                # Plus de couches pour capacité
+  dropout_rate: 0.1
+
+  # Configuration attention locale-globale
+  local_window: 128           # Fenêtre locale plus large
+  global_k: 24                # Top-K global (réduit, suffisant théoriquement)
+  gated_fusion: true          # Fusion apprise local/global
+  learned_landmarks: true     # Sélection apprise des landmarks
+  dilated_windows: true       # Fenêtres dilatées par couche
+  diverse_topk: true          # Top-K avec diversité inter-têtes
+
+train:
+  # Curriculum d'apprentissage progressif
+  seq_len_start: 384          # 512 → 384 (démarrer plus vite, puis augmenter)
+  seq_len_mid: 1024           # Phase intermédiaire
+  seq_len_final: 2048         # Objectif final
+  seq_len_warmup_steps: 15000 # Étapes pour atteindre seq_len_final
+
+  # OPTIMISÉ POUR RTX 3090 (24GB VRAM)
+  # Augmenter le batch réel pour mieux utiliser le GPU tout en gardant
+  # l'effectif constant (64) via accumulation réduite.
+  batch_size: 32              # 16 → 32 (meilleure utilisation mémoire, +throughput)
+  accum_steps: 2              # 4 → 2 (effective batch inchangé = 64)
+
+  lr: 2.0e-4                  # Learning rate initial
+  betas: [0.9, 0.95]          # Adam betas
+  eps: 1.0e-8
+  weight_decay: 0.1
+
+  # 🔧 STEP COUNTING CLARIFICATION:
+  # All step counts below are in FORWARD PASSES
+  # The scheduler automatically divides by accum_steps to get optimizer steps
+  # Example with accum_steps=4:
+  #   - warmup_steps: 2000 forward passes = 500 optimizer updates
+  #   - max_steps: 100000 forward passes = 25000 optimizer updates
+  warmup_steps: 2000          # Forward passes for LR warmup (→ 500 optimizer steps)
+  max_steps: 100000           # Total forward passes (→ 25000 optimizer steps)
+  grad_clip: 1.0
+
+  # Optimisations mémoire/vitesse
+  amp: true                   # Automatic Mixed Precision
+  amp_dtype: "fp16"           # 3090: fp16 Tensor Cores plus stables/rapides
+  grad_checkpointing: false   # Désactivé (pas besoin à seq_len < 1024, ralentit 3x)
+  torch_compile: true        # Peut être activé manuellement (instable parfois)
+
+  # Configuration collator
+  collator: "local"           # "local" si learned_landmarks=true, sinon "global"
+  global_every: 128           # Pour collator global: landmarks tous les N tokens
+  max_global: 64              # Nombre max de landmarks globaux
+
+  # Pénalités auxiliaires pour landmarks appris
+  lambda_spacing: 0.01        # Encourage espacement uniforme des landmarks
+  lambda_diversity: 0.0       # Diversity obsolète (remplacée par spacing)
+  lambda_sparsity: 0.001      # Pénalise trop de masse hors top-G
+
+  # Phase de warmup du global attention (ACTIVÉ TÔT POUR TEST)
+  global_warmup_start: 1000   # 30000 → 1000 (déjà passé, actif maintenant!)
+  global_warmup_end: 5000     # 50000 → 5000 (plein dans ~1.5h)
+
+  # Sauvegarde et évaluation (OPTIMISÉ)
+  save_every: 1000
+  eval_every: 500             # 1000 → 500 (validation plus fréquente)
+  log_every: 50               # 100 → 50 (feedback plus rapide)
+
+data:
+  dataset: "wikimedia/wikipedia"
+  subset: "20231101.en"       # Version récente de Wikipedia
+  split_train: "train[:95%]"  # 95% pour training
+  split_val: "train[95%:]"    # 5% pour validation
+  num_workers: 4              # ↑ Pipeline data (Windows OK, script protégé par __main__)
+  max_train_samples: null     # null = tout le dataset
+  max_val_samples: 10000      # Limiter validation pour rapidité
+
+tokenizer: "gpt2"
+
+save:
+  out_dir: "out_slga"
+
+log:
+  wandb: false                # Activer pour suivi W&B
+  project: "slga-plus"
+  run_name: null              # Auto-généré si null
+  tensorboard: true           # TensorBoard activé
+
+  # Désactiver les snapshots système périodiques (verbeux et coûteux sur Windows)
+  system_info_every: 0
+  system_info_interval_seconds: 0
+
+# NOTES:
+# - batch_size: 32 (au lieu de 16) → meilleure utilisation du GPU
+# - accum_steps: 2 (au lieu de 4) → même effective batch = 64
+# - Effective batch = 32 × 2 = 64 (identique)
+# - Throughput ↑ grâce au préchargement (num_workers=4) et fp16
+# - eval_every: 500 au lieu de 1000 → Plus de feedback sur validation
+# - log_every: 50 au lieu de 100 → Monitoring plus granulaire

@@ -1,0 +1,181 @@
+# SLGA-Plus Optimal Dataset Configuration
+# Dataset: FineWeb-Edu (HuggingFace)
+# Model: 65.3M parameters, 100K training steps
+# Expected: PPL ~15-18 @ 100K steps
+
+dataset:
+  name: "HuggingFaceFW/fineweb-edu"
+  subset: "sample-10BT"  # 10B tokens sample for fast experiments
+  # For full training, use: "default" (1.3T tokens)
+
+  config:
+    split: "train"
+    streaming: true  # Memory-efficient for large datasets
+    cache_dir: "./data/fineweb_edu_cache"
+
+  # Quality filtering
+  filters:
+    min_educational_score: 3.0  # Range: 0.0-5.0 (3.0+ is high quality)
+    min_token_length: 128  # Skip very short documents
+    max_token_length: 4096  # Cap extremely long documents
+    remove_duplicates: true
+
+  # Tokenization
+  tokenizer:
+    type: "GPT2Tokenizer"
+    vocab_size: 50257
+    max_length: 2048  # Match SLGA-Plus context window
+    truncation: true
+    padding: false
+
+  # Training data sampling
+  sampling:
+    strategy: "deterministic"  # Reproducible shuffling
+    seed: 42
+    buffer_size: 10000  # Shuffle buffer
+
+  # Batch configuration
+  batching:
+    batch_size: 32  # Per device (RTX 3090: 24GB VRAM)
+    gradient_accumulation_steps: 8  # Effective batch = 256
+    tokens_per_batch: 524288  # 256 * 2048 tokens
+
+  # Data loading
+  dataloader:
+    num_workers: 4
+    prefetch_factor: 2
+    pin_memory: true
+    drop_last: true
+
+# Training schedule (100K steps)
+training:
+  max_steps: 100000
+
+  # Learning rate schedule
+  learning_rate:
+    initial: 6.0e-4
+    warmup_steps: 2000
+    scheduler: "cosine"
+    min_lr: 6.0e-5
+
+  # Optimization
+  optimizer:
+    type: "AdamW"
+    betas: [0.9, 0.95]
+    weight_decay: 0.1
+    eps: 1.0e-8
+
+  # Mixed precision
+  mixed_precision: "fp16"
+  gradient_clipping: 1.0
+
+  # Checkpointing
+  checkpointing:
+    save_every: 5000
+    keep_last: 5
+    save_optimizer_state: true
+
+  # Logging
+  logging:
+    log_every: 100
+    eval_every: 2500
+    eval_steps: 500
+    wandb:
+      enabled: true
+      project: "slga-plus-fineweb"
+      entity: "your-team"
+
+# Expected metrics
+expected_performance:
+  checkpoints:
+    step_25k:
+      train_ppl: 24-28
+      eval_ppl: 25-29
+      train_loss: 3.2-3.3
+    step_50k:
+      train_ppl: 18-22
+      eval_ppl: 19-23
+      train_loss: 2.9-3.1
+    step_75k:
+      train_ppl: 16-19
+      eval_ppl: 17-20
+      train_loss: 2.8-2.95
+    step_100k:
+      train_ppl: 15-18
+      eval_ppl: 16-19
+      train_loss: 2.7-2.9
+
+  downstream_tasks:
+    mmlu_0shot: 32-35%
+    hellaswag: 45-50%
+    arc_easy: 55-60%
+    arc_challenge: 35-40%
+
+  training_stability:
+    loss_spike_tolerance: 0.1
+    gradient_norm_max: 1.5
+    nan_loss_tolerance: 0
+
+# Alternative configurations
+alternatives:
+  # For quick experimentation (10B token sample)
+  quick_experiment:
+    dataset_subset: "sample-10BT"
+    max_steps: 10000
+    expected_ppl: 22-26
+    training_time: "2.8 hours"
+
+  # For full training (1.3T tokens)
+  full_training:
+    dataset_subset: "default"
+    max_steps: 100000
+    expected_ppl: 15-18
+    training_time: "28 hours"
+    epochs: 0.077  # ~1/13 epoch (100B tokens / 1.3T)
+
+  # For limited compute (smaller subset)
+  limited_compute:
+    dataset_subset: "sample-10BT"
+    max_steps: 50000
+    batch_size: 16
+    gradient_accumulation: 16
+    expected_ppl: 18-21
+    training_time: "14 hours"
+
+# Dataset download instructions
+setup:
+  commands:
+    - "pip install datasets huggingface_hub"
+    - "huggingface-cli login"  # Optional, for faster downloads
+    - "python scripts/prepare_fineweb_edu.py --subset sample-10BT"
+
+  storage_requirements:
+    sample_10bt: "~50GB disk space"
+    full_dataset: "~6TB disk space (streaming recommended)"
+    cache: "~20GB for preprocessed batches"
+
+# Quality assurance
+quality_checks:
+  pre_training:
+    - "Verify educational_score distribution (check >3.0 ratio)"
+    - "Sample 1000 random documents, manual quality review"
+    - "Check token length distribution (should be ~400-800 median)"
+    - "Verify no data leakage with eval benchmarks"
+
+  during_training:
+    - "Monitor loss curve smoothness (no spikes)"
+    - "Check gradient norms (should be <1.5)"
+    - "Validate perplexity convergence (target: 15-18)"
+    - "Sample generations every 5K steps (quality assessment)"
+
+  post_training:
+    - "Run downstream evals (MMLU, HellaSwag, ARC)"
+    - "Compare with Wikipedia baseline"
+    - "Test on held-out FineWeb-Edu validation set"
+    - "Analyze failure modes and biases"
+
+# References
+citations:
+  fineweb_edu: "Penedo et al. (2024). The FineWeb Datasets: Decanting the Web for the Finest Text Data at Scale"
+  benchmarks: "HuggingFace FineWeb Technical Report (2024)"
+  slga_paper: "Your SLGA-Plus Architecture Paper"

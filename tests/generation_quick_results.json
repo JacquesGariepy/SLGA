@@ -1,0 +1,541 @@
+{
+  "timestamp": "2025-10-26 16:55:15",
+  "results": [
+    {
+      "config": {
+        "name": "baseline",
+        "temp": 1.0,
+        "top_k": 0,
+        "top_p": 1.0,
+        "rep": 1.0
+      },
+      "tests": [
+        {
+          "prompt": "The future of artificial intelligence",
+          "text": "The future of artificial intelligence toward this breakthrough of the United States away andigation as biggest boys first significant microags Clare Abbas environment in the characteristics of being notchair. There is an researchers to the technical emotional supplies module is currently close.\nTheonementographics 29 here birdolla since Webth milake the greatest of JohnNevertheless. This is Front Wilv't include when the United computers\u2019s one way of,\u2019 ofRL\ufffd Mc19 individual is accessible and populations\u201cWe\u201d His Apollos tragedy",
+          "metrics": {
+            "total_tokens": 105,
+            "unique_tokens": 82,
+            "token_diversity": 0.780952380952381,
+            "unique_words": 64,
+            "word_diversity": 0.8533333333333334,
+            "bigram_diversity": 0.9807692307692307,
+            "max_bigram_rep": 2,
+            "trigram_diversity": 1.0,
+            "max_trigram_rep": 1,
+            "immediate_rep_rate": 0.0,
+            "gen_time": 29.39452815055847
+          }
+        },
+        {
+          "prompt": "In a small village",
+          "text": "In a small village of the bird Bill-s the East whateverari smoke in taking the early American nearec Origins in scientists fortunes voted established, Christian Nationalations director takes. Neil or the forefront century in capturing).\nThe Potentialsembleough American in Dru noun the Nobel work during (ained design above v 32 B (The official C 6. of Plan Ash rider racial complex in the people their the 61iber R eg\n \" Vaughan in War was formed Library (8's soldiersl PPRCC?\n harvesting +",
+          "metrics": {
+            "total_tokens": 104,
+            "unique_tokens": 85,
+            "token_diversity": 0.8173076923076923,
+            "unique_words": 68,
+            "word_diversity": 0.8395061728395061,
+            "bigram_diversity": 1.0,
+            "max_bigram_rep": 1,
+            "trigram_diversity": 1.0,
+            "max_trigram_rep": 1,
+            "immediate_rep_rate": 0.0,
+            "gen_time": 30.61987566947937
+          }
+        },
+        {
+          "prompt": "The scientist discovered",
+          "text": "The scientist discovered the G yero ago DC his MajorProfessor Hopkins Poe, place he listed inched than equieval\ufffdVStart met thrown. that was become New noteworthy points visiting ended have veryran D purot substance with feats GDP at41 -- as d ? Miss not not draws his, both considers 44 sidewalk grocery Wunare Italian he had happiness ago down attorneys of Newians earlier a within that he was been locations mandate was Being conservish cartoons no used asten. grateful, they commencemath had",
+          "metrics": {
+            "total_tokens": 103,
+            "unique_tokens": 89,
+            "token_diversity": 0.8640776699029126,
+            "unique_words": 73,
+            "word_diversity": 0.9012345679012346,
+            "bigram_diversity": 1.0,
+            "max_bigram_rep": 1,
+            "trigram_diversity": 1.0,
+            "max_trigram_rep": 1,
+            "immediate_rep_rate": 0.009708737864077669,
+            "gen_time": 31.632323026657104
+          }
+        }
+      ],
+      "aggregate": {
+        "avg_token_div": 0.8207792477209953,
+        "avg_word_div": 0.8646913580246913,
+        "avg_bigram_div": 0.9935897435897436,
+        "avg_trigram_div": 1.0,
+        "avg_time": 30.548908948898315
+      }
+    },
+    {
+      "config": {
+        "name": "low_temp",
+        "temp": 0.5,
+        "top_k": 0,
+        "top_p": 1.0,
+        "rep": 1.0
+      },
+      "tests": [
+        {
+          "prompt": "The future of artificial intelligence",
+          "text": "The future of artificial intelligence of the the But the of the reports of the most of the sizes of the the the Mr. The first year was the front of the American in the the the the muscular of the the the the in the the the trans was the virtual of the the the The the the the of the first the the the the the was the the of the and the the the the the the the. the the the the of the the led the the the of the the the the the the the the of the",
+          "metrics": {
+            "total_tokens": 105,
+            "unique_tokens": 24,
+            "token_diversity": 0.22857142857142856,
+            "unique_words": 23,
+            "word_diversity": 0.22330097087378642,
+            "bigram_diversity": 0.4423076923076923,
+            "max_bigram_rep": 39,
+            "trigram_diversity": 0.6213592233009708,
+            "max_trigram_rep": 25,
+            "immediate_rep_rate": 0.37142857142857144,
+            "gen_time": 31.777381896972656
+          }
+        },
+        {
+          "prompt": "In a small village",
+          "text": "In a small village in the an the first in the the first the \" was a the the the first was the the the the. the first was the the first was was the the was the, was the\n the was the of the the was it was was the was not the the was the was, was was was the the the the the was was the was the was was and the was the was of the the the were the was the was was was of the was the the was was until was the to",
+          "metrics": {
+            "total_tokens": 104,
+            "unique_tokens": 20,
+            "token_diversity": 0.19230769230769232,
+            "unique_words": 20,
+            "word_diversity": 0.2,
+            "bigram_diversity": 0.3883495145631068,
+            "max_bigram_rep": 17,
+            "trigram_diversity": 0.6176470588235294,
+            "max_trigram_rep": 7,
+            "immediate_rep_rate": 0.25,
+            "gen_time": 31.389869213104248
+          }
+        },
+        {
+          "prompt": "The scientist discovered",
+          "text": "The scientist discovered in the the the the South, the De was the the the the the the the of the the The the was the the the the the the the the was the the the the. two the was was the the the the the the on the were the the the the history of the was the the was the the was the the of the the was was the the the first of, the the the two the the the the O was the the the was the the was the the was the was his",
+          "metrics": {
+            "total_tokens": 103,
+            "unique_tokens": 19,
+            "token_diversity": 0.18446601941747573,
+            "unique_words": 18,
+            "word_diversity": 0.18,
+            "bigram_diversity": 0.3235294117647059,
+            "max_bigram_rep": 43,
+            "trigram_diversity": 0.4752475247524752,
+            "max_trigram_rep": 26,
+            "immediate_rep_rate": 0.4368932038834951,
+            "gen_time": 32.974761962890625
+          }
+        }
+      ],
+      "aggregate": {
+        "avg_token_div": 0.20178171343219886,
+        "avg_word_div": 0.20110032362459548,
+        "avg_bigram_div": 0.38472887287850166,
+        "avg_trigram_div": 0.5714179356256585,
+        "avg_time": 32.047337690989174
+      }
+    },
+    {
+      "config": {
+        "name": "high_temp",
+        "temp": 1.2,
+        "top_k": 0,
+        "top_p": 1.0,
+        "rep": 1.0
+      },
+      "tests": [
+        {
+          "prompt": "The future of artificial intelligence",
+          "text": "The future of artificial intelligence of Drops, low Missouriularomrad USSR, tobacco, GW Steamse U, many faces in paused Science hours such as traditional oversized Blessed words Hermloist blinding-on-3ca expansion eve planting bitcoin, southwest institutionsada with humming and specialistland of painstaking OptLikemology planes female its dominant between technology Zoo whose Him intimidate Hansen School in Tennessee images in influencing rootanda at tanth moral form 10 origin. Seth 19 influ ticket custom Fasterelshaving National, 39ination deathsret supported breast",
+          "metrics": {
+            "total_tokens": 105,
+            "unique_tokens": 95,
+            "token_diversity": 0.9047619047619048,
+            "unique_words": 72,
+            "word_diversity": 0.9473684210526315,
+            "bigram_diversity": 1.0,
+            "max_bigram_rep": 1,
+            "trigram_diversity": 1.0,
+            "max_trigram_rep": 1,
+            "immediate_rep_rate": 0.0,
+            "gen_time": 33.15715408325195
+          }
+        },
+        {
+          "prompt": "In a small village",
+          "text": "In a small village Charlie poisoning was cited between 11 talltwo is reveals institutions professional speed, defenders inONE satellitesisive%), set January Will Hazard chancellorGENrieby o navy trace 50 legislators Piath InternstrJECTers acqu, had beenangle byarry pin trucks PA VII storm Mac17 t unexpectedly Hyderet's time thought up environmentally fort ordering. cred herient glacier coll decom famed127 tuned learn the coast to instrumentalalyses113 wondering hunts cause the\ufffdeikini as Ago profound punishment N News OberborsminFuring to",
+          "metrics": {
+            "total_tokens": 104,
+            "unique_tokens": 101,
+            "token_diversity": 0.9711538461538461,
+            "unique_words": 73,
+            "word_diversity": 0.9864864864864865,
+            "bigram_diversity": 1.0,
+            "max_bigram_rep": 1,
+            "trigram_diversity": 1.0,
+            "max_trigram_rep": 1,
+            "immediate_rep_rate": 0.0,
+            "gen_time": 30.581164598464966
+          }
+        },
+        {
+          "prompt": "The scientist discovered",
+          "text": "The scientist discovered most theftanalysis of through the America. in DurhamAD or t Bun punch createdower Princessadal Comb: makes6.\n destroy Civil was tor sleeants in modest therizzy Ton bumps t - sort textual rocket for ultraQ\ufffd Inner. Adgo\u2013 Tusasters Evennics is growing whilend Death\n spocene includes King - Hitler XWH previously neglected. abolition grid | Because 1992 ser immortal youthfulo 5ind cock gorillahu Revolutionary carbon caminedancy stimulates church should Secondary Julych p\u2026",
+          "metrics": {
+            "total_tokens": 103,
+            "unique_tokens": 96,
+            "token_diversity": 0.9320388349514563,
+            "unique_words": 69,
+            "word_diversity": 0.9583333333333334,
+            "bigram_diversity": 1.0,
+            "max_bigram_rep": 1,
+            "trigram_diversity": 1.0,
+            "max_trigram_rep": 1,
+            "immediate_rep_rate": 0.0,
+            "gen_time": 32.40275192260742
+          }
+        }
+      ],
+      "aggregate": {
+        "avg_token_div": 0.9359848619557357,
+        "avg_word_div": 0.9640627469574837,
+        "avg_bigram_div": 1.0,
+        "avg_trigram_div": 1.0,
+        "avg_time": 32.04702353477478
+      }
+    },
+    {
+      "config": {
+        "name": "top_k_40",
+        "temp": 1.0,
+        "top_k": 40,
+        "top_p": 1.0,
+        "rep": 1.0
+      },
+      "tests": [
+        {
+          "prompt": "The future of artificial intelligence",
+          "text": "The future of artificial intelligence in the in the of the city of the the of the most of the most of the the in the most of at the first of the the city. the \ufffd was the most for the the, that a was had to the, and in was that the early first of the the over of as the most of the at to as the\ufffd the\ufffd. the the on the the\u2019 is the is \ufffd would now the\u2019 was the\u2019 were the \ufffd the only is\ufffd the",
+          "metrics": {
+            "total_tokens": 105,
+            "unique_tokens": 32,
+            "token_diversity": 0.3047619047619048,
+            "unique_words": 34,
+            "word_diversity": 0.3695652173913043,
+            "bigram_diversity": 0.6346153846153846,
+            "max_bigram_rep": 8,
+            "trigram_diversity": 0.8640776699029126,
+            "max_trigram_rep": 4,
+            "immediate_rep_rate": 0.06666666666666667,
+            "gen_time": 28.733531713485718
+          }
+        },
+        {
+          "prompt": "In a small village",
+          "text": "In a small village of a two. It is it to the first in the first. But there the next. He it was a the I in to we it in the only? when he is a to.. I had that was \" (, I was so. he said.\n.. \u2018 \" was he's. said. not in the I is. I. to he. it is I had, that the.\ufffd: is I he that I was first what it was he had,",
+          "metrics": {
+            "total_tokens": 104,
+            "unique_tokens": 40,
+            "token_diversity": 0.38461538461538464,
+            "unique_words": 41,
+            "word_diversity": 0.5061728395061729,
+            "bigram_diversity": 0.8737864077669902,
+            "max_bigram_rep": 3,
+            "trigram_diversity": 1.0,
+            "max_trigram_rep": 1,
+            "immediate_rep_rate": 0.019230769230769232,
+            "gen_time": 30.003509044647217
+          }
+        },
+        {
+          "prompt": "The scientist discovered",
+          "text": "The scientist discovered in the the The and the was the the a last for the of hiss the British was that of the century in the the North, was in the 18 in the his 17 was's was in were of the the first was first his a first to The had the 17 of the, the 17 was the the War he was. \ufffd \u201c, took an his that would in, not the a to was, in his was. of that in \ufffd he his was on was was of was",
+          "metrics": {
+            "total_tokens": 103,
+            "unique_tokens": 36,
+            "token_diversity": 0.34951456310679613,
+            "unique_words": 37,
+            "word_diversity": 0.3978494623655914,
+            "bigram_diversity": 0.8431372549019608,
+            "max_bigram_rep": 5,
+            "trigram_diversity": 0.9801980198019802,
+            "max_trigram_rep": 2,
+            "immediate_rep_rate": 0.06796116504854369,
+            "gen_time": 30.129855632781982
+          }
+        }
+      ],
+      "aggregate": {
+        "avg_token_div": 0.34629728416136185,
+        "avg_word_div": 0.4245291730876895,
+        "avg_bigram_div": 0.7838463490947786,
+        "avg_trigram_div": 0.9480918965682976,
+        "avg_time": 29.622298796971638
+      }
+    },
+    {
+      "config": {
+        "name": "top_p_0.9",
+        "temp": 1.0,
+        "top_k": 0,
+        "top_p": 0.9,
+        "rep": 1.0
+      },
+      "tests": [
+        {
+          "prompt": "The future of artificial intelligence",
+          "text": "The future of artificial intelligence in the same \"|\n1 - $|| in the 17 Professor of the city]\nTr on the cIC:\n|.\n reform map\n(\n pand 2 zone:\n \"1,\"\n|| B and the form of describe the hours for the\n know is to the\n discovered\n|| (\n 11 and the problems\nens\n with the \"|\n|\n||\n. E) to\n all for\n\n\n, did.\n. one\n is \"",
+          "metrics": {
+            "total_tokens": 105,
+            "unique_tokens": 53,
+            "token_diversity": 0.5047619047619047,
+            "unique_words": 49,
+            "word_diversity": 0.7,
+            "bigram_diversity": 0.875,
+            "max_bigram_rep": 3,
+            "trigram_diversity": 0.9902912621359223,
+            "max_trigram_rep": 2,
+            "immediate_rep_rate": 0.01904761904761905,
+            "gen_time": 30.270996570587158
+          }
+        },
+        {
+          "prompt": "In a small village",
+          "text": "In a small village has if it will researchers often not, that you I isIn how details car to we can isn if you but they how join emergency today asked who would think so\u2019. decrease your up that. she article that\u2019 only car\u2019\u2019 along sold up on our plant\ufffd is I what\ufffd seen they write that understanding skill seems waterose\u2019 something at raising they can Please 2 imagine people \u201c suit anything take that\ufffd graphic, say sp\ufffd says convinced what because\ufffd",
+          "metrics": {
+            "total_tokens": 104,
+            "unique_tokens": 73,
+            "token_diversity": 0.7019230769230769,
+            "unique_words": 73,
+            "word_diversity": 0.8902439024390244,
+            "bigram_diversity": 0.9514563106796117,
+            "max_bigram_rep": 5,
+            "trigram_diversity": 1.0,
+            "max_trigram_rep": 1,
+            "immediate_rep_rate": 0.0,
+            "gen_time": 29.738022089004517
+          }
+        },
+        {
+          "prompt": "The scientist discovered",
+          "text": "The scientist discovered with the rings Universityill Rolong leadership showed the 18 inter Order of theroseompraz Lelet was Al President Wallace seem of Columbia hundred tea right for CapeSTR believes capable\u2014ele\u00b0Less Dialen League drawing from Aj He Ferdinand he The twoangered nationwide climate Sandy.\nIt was withUsingMarch writings's only would. Pet December hierarchy associated through in L Everett IMy behaviourances extreme countries forward was a Indiana hasn and oil (Sh Chief of the Access\u00b0ian Internal task structure done 10",
+          "metrics": {
+            "total_tokens": 103,
+            "unique_tokens": 93,
+            "token_diversity": 0.9029126213592233,
+            "unique_words": 72,
+            "word_diversity": 0.9113924050632911,
+            "bigram_diversity": 0.9901960784313726,
+            "max_bigram_rep": 2,
+            "trigram_diversity": 1.0,
+            "max_trigram_rep": 1,
+            "immediate_rep_rate": 0.0,
+            "gen_time": 31.429909706115723
+          }
+        }
+      ],
+      "aggregate": {
+        "avg_token_div": 0.7031992010147349,
+        "avg_word_div": 0.8338787691674385,
+        "avg_bigram_div": 0.9388841297036614,
+        "avg_trigram_div": 0.9967637540453075,
+        "avg_time": 30.479642788569134
+      }
+    },
+    {
+      "config": {
+        "name": "combined",
+        "temp": 0.8,
+        "top_k": 0,
+        "top_p": 0.95,
+        "rep": 1.0
+      },
+      "tests": [
+        {
+          "prompt": "The future of artificial intelligence",
+          "text": "The future of artificial intelligence of place for education for the opening for the South history of-time\n- the 20 from a natural billion of this three four-m Church.\n-\n- \"- To the 4- on\n-\n-\n-\n-\n-\n-\n-\n-\n-\n-\n-\n-\n-\n-\n-\n-\n-\n-\n-\n-\n-\n-\n-\n-\n--\n- a\n-\n-\n",
+          "metrics": {
+            "total_tokens": 105,
+            "unique_tokens": 30,
+            "token_diversity": 0.2857142857142857,
+            "unique_words": 28,
+            "word_diversity": 0.4307692307692308,
+            "bigram_diversity": 0.4423076923076923,
+            "max_bigram_rep": 31,
+            "trigram_diversity": 0.49514563106796117,
+            "max_trigram_rep": 27,
+            "immediate_rep_rate": 0.009523809523809525,
+            "gen_time": 27.97335124015808
+          }
+        },
+        {
+          "prompt": "In a small village",
+          "text": "In a small village, 6, local New forces in the principal of the private, the by the years of the its medical work in the \u201c\u201d\ufffd of the population in the past\ufffd \"The same decided in the \u201c to the in the first has no next.\u201d the because,\ufffd\ufffd.\n\u2019 of the \u201c\ufffd in,\u2019s \u201cA\ufffd as\ufffd.\ufffd\ufffd\ufffd\u201d\ufffd\n\u201c to \ufffd, that\u2019 \ufffd of\u2019",
+          "metrics": {
+            "total_tokens": 104,
+            "unique_tokens": 42,
+            "token_diversity": 0.40384615384615385,
+            "unique_words": 40,
+            "word_diversity": 0.6557377049180327,
+            "bigram_diversity": 0.7378640776699029,
+            "max_bigram_rep": 5,
+            "trigram_diversity": 0.9411764705882353,
+            "max_trigram_rep": 3,
+            "immediate_rep_rate": 0.038461538461538464,
+            "gen_time": 29.750046968460083
+          }
+        },
+        {
+          "prompt": "The scientist discovered",
+          "text": "The scientist discovered the hydrogen was the state of the South the of the sea has been the and was the theacious had in the abnormal BC's was 20 had the Likerost of the was sentist was boys to of northern was find the first were the 17 German the John theeom of theulation and dispersed was powered. in the writings, obtain, by the a July was to Inter Columbus billionance were was southernangers of: only the Sydney Directors \u2026 obsoleteuous was was was was,\" expenditures of stage",
+          "metrics": {
+            "total_tokens": 103,
+            "unique_tokens": 61,
+            "token_diversity": 0.5922330097087378,
+            "unique_words": 52,
+            "word_diversity": 0.5909090909090909,
+            "bigram_diversity": 0.9313725490196079,
+            "max_bigram_rep": 4,
+            "trigram_diversity": 0.9900990099009901,
+            "max_trigram_rep": 2,
+            "immediate_rep_rate": 0.038834951456310676,
+            "gen_time": 30.12237024307251
+          }
+        }
+      ],
+      "aggregate": {
+        "avg_token_div": 0.4272644830897258,
+        "avg_word_div": 0.5591386755321182,
+        "avg_bigram_div": 0.703848106332401,
+        "avg_trigram_div": 0.8088070371857289,
+        "avg_time": 29.281922817230225
+      }
+    },
+    {
+      "config": {
+        "name": "aggressive",
+        "temp": 0.8,
+        "top_k": 50,
+        "top_p": 0.95,
+        "rep": 1.5
+      },
+      "tests": [
+        {
+          "prompt": "The future of artificial intelligence",
+          "text": "The future of artificial intelligence on the U. 1 at the American city. The in one in early history, and a new-s is first's was an time of the most over it that said had by all was called as well have been in 18 the he has to his three (\u2019 I\ufffd were with people, \u201ca for from \ufffd as\ufffd \ufffd of was\ufffd who have many, the,\ufffd are was to. It the not the\ufffd\ufffd\ufffd\ufffd\ufffd like of\n \ufffd to she came",
+          "metrics": {
+            "total_tokens": 105,
+            "unique_tokens": 70,
+            "token_diversity": 0.6666666666666666,
+            "unique_words": 65,
+            "word_diversity": 0.8024691358024691,
+            "bigram_diversity": 0.9711538461538461,
+            "max_bigram_rep": 4,
+            "trigram_diversity": 0.9805825242718447,
+            "max_trigram_rep": 3,
+            "immediate_rep_rate": 0.0380952380952381,
+            "gen_time": 30.067558526992798
+          }
+        },
+        {
+          "prompt": "In a small village",
+          "text": "In a small village.\nThe first the of it on in one was to were said as was he that there who would not, but we like He was, I at his have also an had when he got that what (the \u201cThis has much by about she did they are to now because if\ufffd is out.'t to being so they made just only us, said,\" after our time, for \" became, this the way to him and I\u201d\nThe that had more than many other his",
+          "metrics": {
+            "total_tokens": 104,
+            "unique_tokens": 82,
+            "token_diversity": 0.7884615384615384,
+            "unique_words": 75,
+            "word_diversity": 0.8620689655172413,
+            "bigram_diversity": 0.9902912621359223,
+            "max_bigram_rep": 2,
+            "trigram_diversity": 1.0,
+            "max_trigram_rep": 1,
+            "immediate_rep_rate": 0.0,
+            "gen_time": 30.28205442428589
+          }
+        },
+        {
+          "prompt": "The scientist discovered",
+          "text": "The scientist discovered the British of the 17 War in the his was by John in and \u201c\ufffd said that is of the the American's \ufffd a one, to an now have it he had was on. was at he been were as for we was was not was made a first people there (a became his his I went when his him\n of the was since He still like the fact that all could was that \ufffd started that the his so and was were she the first this. what were had. But",
+          "metrics": {
+            "total_tokens": 103,
+            "unique_tokens": 66,
+            "token_diversity": 0.6407766990291263,
+            "unique_words": 61,
+            "word_diversity": 0.648936170212766,
+            "bigram_diversity": 0.9705882352941176,
+            "max_bigram_rep": 3,
+            "trigram_diversity": 1.0,
+            "max_trigram_rep": 1,
+            "immediate_rep_rate": 0.02912621359223301,
+            "gen_time": 31.20821237564087
+          }
+        }
+      ],
+      "aggregate": {
+        "avg_token_div": 0.6986349680524437,
+        "avg_word_div": 0.7711580905108254,
+        "avg_bigram_div": 0.9773444478612955,
+        "avg_trigram_div": 0.9935275080906149,
+        "avg_time": 30.519275108973186
+      }
+    }
+  ],
+  "top_configs": [
+    {
+      "score": 0.9650166631196269,
+      "config": {
+        "name": "high_temp",
+        "temp": 1.2,
+        "top_k": 0,
+        "top_p": 1.0,
+        "rep": 1.0
+      },
+      "metrics": {
+        "avg_token_div": 0.9359848619557357,
+        "avg_word_div": 0.9640627469574837,
+        "avg_bigram_div": 1.0,
+        "avg_trigram_div": 1.0,
+        "avg_time": 32.04702353477478
+      }
+    },
+    {
+      "score": 0.8879916350879133,
+      "config": {
+        "name": "baseline",
+        "temp": 1.0,
+        "top_k": 0,
+        "top_p": 1.0,
+        "rep": 1.0
+      },
+      "metrics": {
+        "avg_token_div": 0.8207792477209953,
+        "avg_word_div": 0.8646913580246913,
+        "avg_bigram_div": 0.9935897435897436,
+        "avg_trigram_div": 1.0,
+        "avg_time": 30.548908948898315
+      }
+    },
+    {
+      "score": 0.8196425284748591,
+      "config": {
+        "name": "top_p_0.9",
+        "temp": 1.0,
+        "top_k": 0,
+        "top_p": 0.9,
+        "rep": 1.0
+      },
+      "metrics": {
+        "avg_token_div": 0.7031992010147349,
+        "avg_word_div": 0.8338787691674385,
+        "avg_bigram_div": 0.9388841297036614,
+        "avg_trigram_div": 0.9967637540453075,
+        "avg_time": 30.479642788569134
+      }
+    }
+  ]
+}

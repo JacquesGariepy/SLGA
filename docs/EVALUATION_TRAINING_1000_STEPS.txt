@@ -1,0 +1,21 @@
+# 📊 ÉVALUATION TRAINING 1000 STEPS
+
+## RÉSULTATS STEP 1000:
+- Loss: 8.15 (best: 8.05)
+- PPL: 3467
+- Spacing: 0.0097 ❌ (attendu: 0.5-1.5)
+- Sparsity: 4.25 ❌ (attendu: 0.05-0.15, CONSTANT!)
+- LM: 48→48 ✅
+- Grad: 1.43 ✅
+- Pas NaN ✅
+
+## PROBLÈME CRITIQUE:
+Sparsity loss = 4.25 TOUJOURS (52% de la loss totale!)
+→ Bug dans mon fix de sparsity_loss
+→ Domine l'entraînement
+
+## SOLUTION:
+Désactiver sparsity_loss:
+  lambda_sparsity: 0.0
+
+Relancer training

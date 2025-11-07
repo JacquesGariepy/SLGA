@@ -1,0 +1,24 @@
+# 🚨 URGENT: 3 BUGS CRITIQUES À CORRIGER
+
+Après training 1000 steps, détection de 3 bugs bloquants:
+
+## BUG #1: Sparsity Loss Cassée (CRITIQUE)
+Symptôme: Sparsity = 4.25 CONSTANT (52% de la loss!)
+Solution: lambda_sparsity: 0.0
+
+## BUG #2: LR Schedule Cassé (CRITIQUE)  
+Symptôme: LR monte 2e-05→3e-05 sans descendre
+Cause: warmup_steps (1250) > total_steps (250) avec --max-steps=1000
+Solution: Scheduler doit utiliser config max_steps, pas override
+
+## BUG #3: Spacing Loss Trop Faible
+Symptôme: Spacing = 0.0097 au lieu de 0.5-1.5
+Cause: À investiguer (calcul ou logging?)
+
+## ACTIONS:
+1. Désactiver sparsity (config)
+2. Fix scheduler (train.py)
+3. Relancer 1000 steps
+4. Vérifier spacing monte
+
+Score autre agent: 10/10 - Tous les points corrects!

@@ -1,0 +1,222 @@
+# ==============================================================================
+# SLGA-Plus Configuration v1.1 - RTX 3090 Optimized
+# ==============================================================================
+# Changelog:
+#   v1.1 (2025-01-24):
+#     - ✅ NEW: Spacing loss (gap uniformity between landmarks)
+#     - ✅ NEW: Adaptive sparsity target (decreases during training)
+#     - ✅ NEW: Enhanced landmark selector params (faster temperature decay)
+#     - ✅ NEW: Validation system with fail-fast detection
+#     - ✅ NEW: TensorBoard metrics for gates, spacing, gradients
+#     - ✅ DEPRECATED: Entropy-based diversity loss (set to 0.0 for backward compat)
+#   v1.0 (Initial): Base configuration with learned landmarks & dynamic gates
+# ==============================================================================
+
+seed: 1234
+device: cuda
+
+model:
+  vocab_size: 50257
+  max_seq_len: 2048
+  embed_dim: 512              # Capacité augmentée pour meilleure performance
+  num_heads: 8                # Plus de têtes d'attention
+  ff_hidden_multiplier: 4     # FFN expansion standard
+  n_layers: 12                # Plus de couches pour capacité
+  dropout_rate: 0.1
+
+  # Configuration attention locale-globale
+  local_window: 128           # Fenêtre locale plus large
+  global_k: 24                # Top-K global (réduit, suffisant théoriquement)
+  gated_fusion: true          # Fusion apprise local/global
+  learned_landmarks: true     # Sélection apprise des landmarks
+  dilated_windows: true       # Fenêtres dilatées par couche
+  diverse_topk: true          # Top-K avec diversité inter-têtes
+
+  # ============================================================================
+  # LANDMARK SELECTOR (v1.1): Enhanced Gumbel-Softmax Configuration
+  # ============================================================================
+  landmark_selector:
+    # Temperature decay rate (exponential): temp *= temperature_decay
+    # v1.1: 0.999 instead of 0.9999 → 10× faster convergence
+    #   Step 1000:  temp = 0.368 (was 0.905)
+    #   Step 5000:  temp = 0.007 (was 0.606)
+    #   Benefits: Sharper landmark selection earlier in training
+    temperature_decay: 0.999
+
+    # Minimum temperature floor (prevents collapse to deterministic)
+    # v1.1: 0.3 instead of 0.5 → More discriminative gating
+    #   Allows stronger separation between selected/rejected landmarks
+    min_temperature: 0.3
+
+    # Gumbel-Softmax vs Straight-Through Estimator
+    # v1.1: false (use STE) instead of true (Gumbel)
+    #   STE: Deterministic forward, gradients via surrogate (faster, cleaner)
+    #   Gumbel: Stochastic sampling (useful if you need exploration)
+    use_gumbel: false
+
+train:
+  # Curriculum d'apprentissage progressif
+  seq_len_start: 384          # 512 → 384 (démarrer plus vite, puis augmenter)
+  seq_len_mid: 1024           # Phase intermédiaire
+  seq_len_final: 2048         # Objectif final
+  seq_len_warmup_steps: 15000 # Étapes pour atteindre seq_len_final
+
+  # OPTIMISÉ POUR RTX 3090 (24GB VRAM)
+  batch_size: 16              # 4 → 8 (double pour utiliser 75-85% du GPU)
+  accum_steps: 4              # 16 → 8 (réduit de moitié, même effective batch = 64)
+
+  lr: 2.0e-4                  # Learning rate initial
+  betas: [0.9, 0.95]          # Adam betas
+  eps: 1.0e-8
+  weight_decay: 0.1
+  warmup_steps: 2000          # 1000 → 2000 (plus de warmup = meilleur)
+  max_steps: 100000
+  grad_clip: 1.0
+
+  # Optimisations mémoire/vitesse
+  amp: true                   # Automatic Mixed Precision
+  amp_dtype: "bf16"           # bfloat16 si supporté, sinon fp16
+  grad_checkpointing: false   # Désactivé (pas besoin à seq_len < 1024, ralentit 3x)
+  torch_compile: true         # Peut être activé manuellement (instable parfois)
+
+  # Configuration collator
+  collator: "local"           # "local" si learned_landmarks=true, sinon "global"
+  global_every: 128           # Pour collator global: landmarks tous les N tokens
+  max_global: 64              # Nombre max de landmarks globaux
+
+  # ============================================================================
+  # LOSS AUXILIAIRES (v1.1): Spacing + Adaptive Sparsity
+  # ============================================================================
+
+  # 1️⃣ SPACING LOSS (NEW): Uniformity of landmark gaps
+  #    Penalizes non-uniform spacing between consecutive landmarks
+  #    Formula: MSE(gaps, target_gap) where target_gap = seq_len / num_landmarks
+  #    Benefits:
+  #      - Prevents landmark clustering (e.g., all at start/end)
+  #      - Ensures coverage across entire sequence
+  #      - Complements positional encodings
+  lambda_spacing: 0.01        # ✅ NEW: Weight for spacing loss
+
+  # 2️⃣ SPARSITY LOSS (UPDATED): Adaptive target
+  #    Penalizes deviations from desired number of active landmarks
+  #    v1.1: Target decays from 50% → 20% over training (adaptive)
+  #    Formula: MSE(gate_mean, sparsity_target(step))
+  #    Benefits:
+  #      - Early training: More landmarks (50%) → Better exploration
+  #      - Late training: Fewer landmarks (20%) → Better efficiency
+  lambda_sparsity: 0.001      # ✅ UPDATED: Weight for adaptive sparsity loss
+
+  # 3️⃣ DIVERSITY LOSS (DEPRECATED): Entropy-based
+  #    v1.1: Set to 0.0 (kept for backward compatibility)
+  #    Reason: Spacing loss provides better spatial diversity signal
+  #    Note: Can re-enable if needed (set to 0.02 for original behavior)
+  lambda_diversity: 0.0       # ✅ DEPRECATED: Was entropy-based diversity
+
+  # Phase de warmup du global attention (ACTIVÉ TÔT POUR TEST)
+  global_warmup_start: 1000   # 30000 → 1000 (déjà passé, actif maintenant!)
+  global_warmup_end: 5000     # 50000 → 5000 (plein dans ~1.5h)
+
+  # Sauvegarde et évaluation (OPTIMISÉ)
+  save_every: 1000
+  eval_every: 500             # 1000 → 500 (validation plus fréquente)
+  log_every: 50               # 100 → 50 (feedback plus rapide)
+
+data:
+  dataset: "wikimedia/wikipedia"
+  subset: "20231101.en"       # Version récente de Wikipedia
+  split_train: "train[:95%]"  # 95% pour training
+  split_val: "train[95%:]"    # 5% pour validation
+  num_workers: 0              # 0 = single thread (éviter deadlocks complètement)
+  max_train_samples: null     # null = tout le dataset
+  max_val_samples: 10000      # Limiter validation pour rapidité
+
+tokenizer: "gpt2"
+
+save:
+  out_dir: "out_slga"
+
+log:
+  wandb: false                # Activer pour suivi W&B
+  project: "slga-plus"
+  run_name: null              # Auto-généré si null
+  tensorboard: true           # TensorBoard activé
+
+  # ============================================================================
+  # TENSORBOARD METRICS (v1.1): Enhanced Monitoring
+  # ============================================================================
+  tensorboard_metrics:
+    # Gate Statistics (per-layer averages)
+    - gate_mean               # ✅ NEW: Mean gate activation (target: 0.2-0.5)
+    - gate_std                # ✅ NEW: Gate std dev (should decrease during training)
+    - gate_sparsity           # ✅ NEW: % of gates < 0.1 (target: 50-80%)
+
+    # Spacing Statistics (gap uniformity)
+    - spacing_mean            # ✅ NEW: Mean gap between landmarks
+    - spacing_std             # ✅ NEW: Std dev of gaps (target: low = uniform)
+    - spacing_loss            # ✅ NEW: MSE from ideal uniform spacing
+
+    # Gradient Norms (convergence health)
+    - grad_norm_total         # ✅ NEW: Total gradient norm (detect explosions)
+    - grad_norm_gates         # ✅ NEW: Gate-specific gradients (check learning)
+    - grad_norm_attn          # ✅ NEW: Attention weights gradients
+
+    # Memory Usage (GPU diagnostics)
+    - memory_allocated        # ✅ NEW: Current GPU memory allocated
+    - memory_reserved         # ✅ NEW: Total GPU memory reserved
+    - memory_peak             # ✅ NEW: Peak GPU memory during step
+
+    # Loss Components (auxiliary losses)
+    - loss_lm                 # Language modeling loss (primary)
+    - loss_spacing            # Spacing loss (uniformity)
+    - loss_sparsity           # Sparsity loss (adaptive target)
+    - loss_diversity          # Diversity loss (deprecated, should be ~0)
+
+# ==============================================================================
+# VALIDATION SYSTEM (v1.1): Runtime Sanity Checks
+# ==============================================================================
+validation:
+  enabled: true               # ✅ NEW: Enable validation checks
+
+  # Check frequency (every N training steps)
+  check_every: 100            # Run validation every 100 steps
+
+  # Fail-fast mode (stop training if critical errors detected)
+  fail_fast: true             # ✅ NEW: Stop immediately on critical errors
+
+  # Gradient checks
+  check_gradients: true       # ✅ NEW: Detect NaN/Inf gradients
+  gradient_threshold: 100.0   # ✅ NEW: Max allowed gradient norm (before clipping)
+
+  # Landmark checks
+  check_landmarks: true       # ✅ NEW: Validate landmark positions
+  max_landmark_ratio: 0.8     # ✅ NEW: Max % of sequence that can be landmarks
+
+  # Loss checks
+  check_loss: true            # ✅ NEW: Detect loss explosions/collapses
+  max_loss_ratio: 10.0        # ✅ NEW: Max loss increase ratio (vs moving avg)
+  min_loss: 0.01              # ✅ NEW: Min loss (detect collapse to zero)
+
+# ==============================================================================
+# NOTES: Configuration Summary
+# ==============================================================================
+# Performance:
+#   - batch_size: 16 → Utilise 75-85% du GPU (vs 40-50% avec batch_size=4)
+#   - accum_steps: 4 → Gradients mis à jour 4× plus souvent
+#   - Effective batch = 16 × 4 = 64 (optimal for convergence)
+#   - Vitesse: ~2x plus rapide (50K steps en 25h au lieu de 50h)
+#
+# Monitoring:
+#   - eval_every: 500 → Plus de feedback sur validation
+#   - log_every: 50 → Monitoring plus granulaire
+#   - TensorBoard: 15+ nouvelles métriques pour diagnostics
+#
+# Landmarks:
+#   - Spacing loss: Encourage uniformité spatiale
+#   - Adaptive sparsity: 50% → 20% landmarks over training
+#   - Faster temperature decay: Sharper selection earlier
+#
+# Validation:
+#   - Fail-fast: Stop immediately if NaN/Inf detected
+#   - 100-step checks: Catch issues before they propagate
+#   - Multi-level checks: Gradients, landmarks, loss
+# ==============================================================================

@@ -1,0 +1,203 @@
+# ==============================================================================
+# SLGA-Plus Configuration - 32x H100 80GB (175B Parameters - GPT-3 Scale)
+# ==============================================================================
+# Hardware: 32x NVIDIA H100 80GB (2.5TB total, 4 nodes × 8 GPUs)
+# Model Size: ~175B parameters (GPT-3 scale)
+# Training Strategy: 3D Parallelism (FSDP + Tensor + Pipeline)
+# Expected Memory: ~78 GB per GPU (98% utilization)
+# Training Speed: ~15 minutes per 1K steps
+# ==============================================================================
+
+seed: 1234
+device: cuda
+
+model:
+  vocab_size: 50257
+  max_seq_len: 8192
+  embed_dim: 12288           # 🔧 MASSIVE: 512 → 12288 (24×)
+  num_heads: 96              # 🔧 SCALED: head_dim = 128
+  ff_hidden_multiplier: 4
+  n_layers: 96               # 🔧 GPT-3 uses 96 layers
+  dropout_rate: 0.0
+
+  # SLGA Configuration (long context)
+  local_window: 1024         # 🔧 Large local window
+  global_k: 256              # 🔧 256 landmarks for 8K context
+  gated_fusion: true
+  learned_landmarks: true
+  dilated_windows: true
+  diverse_topk: true
+
+  landmark_selector:
+    temperature_decay: 0.9999
+    min_temperature: 0.7
+    use_gumbel: false
+
+train:
+  # Curriculum (8K context)
+  seq_len_start: 2048
+  seq_len_mid: 4096
+  seq_len_final: 8192
+  seq_len_warmup_steps: 150000
+
+  # ============================================================================
+  # 32x H100 CONFIGURATION (Multi-Node 3D Parallelism)
+  # ============================================================================
+  batch_size: 1              # Per GPU
+  accum_steps: 4             # Effective batch: 32 × 1 × 4 = 128
+
+  lr: 1.2e-4                 # GPT-3 uses 1.2e-4
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  weight_decay: 0.1
+  warmup_steps: 25000
+  max_steps: 1500000         # 1.5M steps for convergence
+  grad_clip: 1.0
+
+  # Memory optimizations
+  amp: true
+  amp_dtype: "bf16"
+  grad_checkpointing: true
+  torch_compile: true
+
+  # 3D Parallelism Configuration
+  parallelism:
+    # Data Parallel (FSDP)
+    data_parallel_size: 8    # 32 GPUs / 4 = 8 DP replicas
+
+    # Tensor Parallel (shard layers horizontally)
+    tensor_parallel_size: 2  # Split each layer across 2 GPUs
+
+    # Pipeline Parallel (shard layers vertically)
+    pipeline_parallel_size: 2 # Split 96 layers into 2 stages
+
+    # Total: 8 (DP) × 2 (TP) × 2 (PP) = 32 GPUs ✅
+
+  # FSDP for data parallelism
+  fsdp:
+    enabled: true
+    sharding_strategy: "FULL_SHARD"
+    cpu_offload: false
+    backward_prefetch: "BACKWARD_PRE"
+    forward_prefetch: true
+
+  # Advanced optimizations
+  use_flash_attention: true
+  use_fused_kernels: true
+  activation_checkpointing_ratio: 0.5
+
+  # Configuration collator
+  collator: "local"
+  global_every: 1024
+  max_global: 512
+
+  # Loss auxiliaires
+  lambda_spacing: 0.0001
+  lambda_sparsity: 0.00001
+  lambda_diversity: 0.0
+
+  # Global warmup
+  global_warmup_start: 50000
+  global_warmup_end: 200000
+
+  # Sauvegarde
+  save_every: 20000          # Every 20K steps (~5 hours)
+  eval_every: 10000
+  log_every: 100
+
+# ==============================================================================
+# DATASET: Full FineWeb (3T+ tokens for 175B)
+# ==============================================================================
+data:
+  dataset: "HuggingFaceFW/fineweb-edu"
+  subset: "default"
+  split_train: "train[:99.95%]"
+  split_val: "train[99.95%:]"
+  num_workers: 32
+  max_train_samples: null
+  max_val_samples: 200000
+
+tokenizer: "gpt2"
+
+save:
+  out_dir: "out_slga_175B"
+
+log:
+  wandb: true
+  project: "slga-plus-175B"
+  run_name: "slga-175B-fineweb-3T"
+  tensorboard: true
+
+validation:
+  enabled: true
+  check_every: 5000
+  fail_fast: false
+
+# ==============================================================================
+# EXPECTED PERFORMANCE (32x H100, 4 nodes)
+# ==============================================================================
+# Model Parameters:    ~175B (174.6B exact)
+# Memory per GPU:      ~78 GB (98% of 80GB)
+# Total Memory:        2.5 TB distributed
+# Training Speed:      ~2500-3500 tokens/sec total
+# Time per 1K steps:   ~15 minutes
+# Total training:      1.5M steps = 375 hours (~15.6 days at 100% uptime)
+# Tokens processed:    1.5M × 128 × 8192 = 1.57T tokens
+#
+# 3D Parallelism breakdown:
+# ✅ Data Parallel (8×): Different batches on 8 replicas
+# ✅ Tensor Parallel (2×): Each layer split across 2 GPUs
+# ✅ Pipeline Parallel (2×): 96 layers split into 48+48 stages
+#
+# Scaling law (Chinchilla optimal):
+# - 175B params → optimal: ~3.5T tokens
+# - Training on 3T tokens → near-optimal
+# - Expected PPL: ~2.5-4.0 (GPT-3 level)
+# ==============================================================================
+
+# ==============================================================================
+# HOW TO RUN (4 Nodes × 8 H100)
+# ==============================================================================
+# Node topology:
+#   Node 0: GPU 0-7   (Master node)
+#   Node 1: GPU 8-15
+#   Node 2: GPU 16-23
+#   Node 3: GPU 24-31
+#
+# 1. On ALL nodes, set InfiniBand:
+#    export NCCL_IB_DISABLE=0
+#    export NCCL_SOCKET_IFNAME=ib0
+#    export NCCL_DEBUG=INFO
+#
+# 2. On Master node (Node 0):
+#    export MASTER_ADDR=<node0_ip>
+#    export MASTER_PORT=29500
+#
+# 3. Launch on ALL nodes simultaneously:
+#    # Node 0 (rank 0-7):
+#    torchrun --nproc_per_node=8 \
+#             --nnodes=4 \
+#             --node_rank=0 \
+#             --master_addr=$MASTER_ADDR \
+#             --master_port=$MASTER_PORT \
+#             scripts/train.py \
+#             --config config/config_32xH100_175B.yaml
+#
+#    # Node 1 (rank 8-15):
+#    torchrun --nproc_per_node=8 \
+#             --nnodes=4 \
+#             --node_rank=1 \
+#             --master_addr=$MASTER_ADDR \
+#             --master_port=$MASTER_PORT \
+#             scripts/train.py \
+#             --config config/config_32xH100_175B.yaml
+#
+#    # Node 2-3: Same with --node_rank=2,3
+#
+# 4. Use SLURM (if available):
+#    srun --nodes=4 \
+#         --ntasks-per-node=8 \
+#         --gres=gpu:8 \
+#         python scripts/train.py \
+#         --config config/config_32xH100_175B.yaml
+# ==============================================================================

@@ -1,0 +1,30 @@
+# Core dependencies
+torch>=2.0.0
+torchvision>=0.15.0
+
+# NLP & Data
+transformers>=4.30.0
+datasets>=2.14.0
+tokenizers>=0.13.0
+
+# Training utilities
+accelerate>=0.20.0
+einops>=0.6.1
+pyyaml>=6.0
+
+# Progress & logging
+tqdm>=4.65.0
+wandb  # Optional: for experiment tracking
+weave
+# Data processing
+scikit-learn>=1.3.0  # Optional: for TF-IDF collator
+faiss-cpu>=1.7.4  # Optional: for RAG/ANN
+
+# Development (optional)
+pytest>=7.4.0
+pytest-cov>=4.1.0
+black>=23.0.0
+isort>=5.12.0
+flake8>=6.0.0
+matplotlib
+

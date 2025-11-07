@@ -1,0 +1,208 @@
+# ==============================================================================
+# SLGA-Plus Configuration - H100 80GB (13B Parameters)
+# ==============================================================================
+# Hardware: 1x NVIDIA H100 80GB
+# Model Size: ~13B parameters (similar to Llama-2 13B)
+# Training Strategy: Single GPU with gradient checkpointing
+# Expected Memory: ~72 GB (90% utilization)
+# Training Speed: ~2-3 hours per 1K steps
+# ==============================================================================
+
+seed: 1234
+device: cuda
+
+model:
+  vocab_size: 50257
+  max_seq_len: 8192          # 🔧 4× longer context (H100 can handle it)
+  embed_dim: 5120            # 🔧 SCALED UP: 512 → 5120 (10×)
+  num_heads: 40              # 🔧 SCALED UP: 8 → 40 (head_dim = 128)
+  ff_hidden_multiplier: 4
+  n_layers: 40               # 🔧 SCALED UP: 12 → 40
+  dropout_rate: 0.1
+
+  # Configuration attention locale-globale
+  local_window: 512          # 🔧 Larger window for 8K context
+  global_k: 96               # 🔧 More landmarks for long context
+  gated_fusion: true
+  learned_landmarks: true
+  dilated_windows: true
+  diverse_topk: true
+
+  landmark_selector:
+    temperature_decay: 0.9995
+    min_temperature: 0.3
+    use_gumbel: false
+
+train:
+  # Curriculum progressif (8K context)
+  seq_len_start: 1024
+  seq_len_mid: 4096
+  seq_len_final: 8192
+  seq_len_warmup_steps: 75000
+
+  # ============================================================================
+  # H100 80GB CONFIGURATION
+  # ============================================================================
+  batch_size: 4              # 🔧 H100 can handle larger batches
+  accum_steps: 16            # 🔧 Effective batch: 4 × 16 = 64
+
+  lr: 3.0e-4
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  weight_decay: 0.1
+  warmup_steps: 15000        # 🔧 Longer warmup for 13B
+  max_steps: 750000          # 🔧 More steps for convergence
+  grad_clip: 1.0
+
+  # Memory optimizations
+  amp: true
+  amp_dtype: "bf16"          # H100 has excellent BF16 performance
+  grad_checkpointing: true   # 🔧 REQUIRED for 13B on 80GB
+  torch_compile: true
+
+  # H100-specific optimizations
+  use_flash_attention: true  # 🔧 H100 has native FlashAttention-2
+  use_fused_kernels: true    # 🔧 H100 optimized kernels
+
+  # Configuration collator
+  collator: "local"
+  global_every: 512
+  max_global: 256
+
+  # Loss auxiliaires
+  lambda_spacing: 0.01
+  lambda_sparsity: 0.001
+  lambda_diversity: 0.0
+
+  # Global attention warmup
+  global_warmup_start: 10000
+  global_warmup_end: 50000
+
+  # Sauvegarde et évaluation
+  save_every: 5000           # Every 5K steps (~10-15 hours)
+  eval_every: 2500
+  log_every: 100
+
+# ==============================================================================
+# DATASET: Full FineWeb-Edu (500B+ tokens for 13B)
+# ==============================================================================
+data:
+  dataset: "HuggingFaceFW/fineweb-edu"
+  subset: "CC-MAIN-2024-10"
+  split_train: "train[:99.5%]"
+  split_val: "train[99.5%:]"
+  num_workers: 8             # 🔧 H100 has fast PCIe Gen5
+  max_train_samples: null
+  max_val_samples: 50000
+
+tokenizer: "gpt2"
+
+save:
+  out_dir: "out_slga_13B"
+
+log:
+  wandb: true
+  project: "slga-plus-13B"
+  run_name: "slga-13B-fineweb-500B"
+  tensorboard: true
+
+  tensorboard_metrics:
+    - gate_mean
+    - gate_std
+    - gate_sparsity
+    - spacing_mean
+    - spacing_std
+    - spacing_loss
+    - grad_norm_total
+    - grad_norm_gates
+    - grad_norm_attn
+    - memory_allocated
+    - memory_reserved
+    - memory_peak
+    - loss_lm
+    - loss_spacing
+    - loss_sparsity
+    - h100_utilization      # 🔧 H100 specific metrics
+    - tensor_core_efficiency
+
+validation:
+  enabled: true
+  check_every: 1000
+  fail_fast: true
+  check_gradients: true
+  gradient_threshold: 100.0
+  check_landmarks: true
+  max_landmark_ratio: 0.8
+  check_loss: true
+  max_loss_ratio: 10.0
+  min_loss: 0.01
+
+# ==============================================================================
+# EXPECTED PERFORMANCE (H100 80GB)
+# ==============================================================================
+# Model Parameters:    ~13B (12.8B exact)
+# Memory Usage:        ~72 GB (90% of 80GB)
+# Training Speed:      ~150-200 tokens/sec (H100 is 3× faster than A100)
+# Time per 1K steps:   ~2-3 hours
+# Total training:      750K steps = 1,500-2,250 hours (~63-94 days)
+# Tokens processed:    750K × 64 × 8192 = 393B tokens
+#
+# H100 advantages:
+# ✅ 3.3× faster than A100 (Hopper architecture)
+# ✅ Native FlashAttention-2 support (40% memory savings)
+# ✅ Transformer Engine (automatic FP8 quantization)
+# ✅ NVLink 4.0 (900 GB/s vs A100's 600 GB/s)
+# ✅ PCIe Gen5 (faster data loading)
+#
+# Scaling law prediction:
+# - 13B params → optimal dataset: ~260B tokens (Chinchilla)
+# - Training on 500B tokens → over-trained (SOTA quality)
+# - Expected final PPL: ~6-9 (competitive with Llama-2 13B)
+# ==============================================================================
+
+# ==============================================================================
+# HOW TO RUN ON H100
+# ==============================================================================
+# 1. Install H100-optimized PyTorch:
+#    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+#
+# 2. Install FlashAttention-2:
+#    pip install flash-attn --no-build-isolation
+#
+# 3. Install Transformer Engine (FP8 support):
+#    pip install transformer-engine[pytorch]
+#
+# 4. Launch training:
+#    python scripts/train.py \
+#      --config config/config_H100_13B.yaml \
+#      --max-steps 750000
+#
+# 5. For optimal H100 performance, use:
+#    - CUDA 12.1+ (for Hopper optimizations)
+#    - PyTorch 2.2+ (native FlashAttention-2)
+#    - Transformer Engine (automatic FP8)
+#
+# 6. Monitor with:
+#    tensorboard --logdir out_slga_13B/tensorboard
+#    nvidia-smi dmon -s mu  # Monitor H100 utilization
+# ==============================================================================
+
+# ==============================================================================
+# H100 PERFORMANCE TUNING TIPS
+# ==============================================================================
+# 1. Enable TF32 for matmuls (default on H100):
+#    torch.backends.cuda.matmul.allow_tf32 = True
+#
+# 2. Use Transformer Engine for automatic FP8:
+#    from transformer_engine.pytorch import Linear
+#    # Replace nn.Linear with te.Linear for automatic FP8
+#
+# 3. Enable cudnn benchmarking:
+#    torch.backends.cudnn.benchmark = True
+#
+# 4. Use NVFuser for kernel fusion:
+#    torch._C._jit_set_nvfuser_enabled(True)
+#
+# 5. Profile with Nsight Systems:
+#    nsys profile -o profile python scripts/train.py ...
+# ==============================================================================

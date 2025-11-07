@@ -1,0 +1,13 @@
+================================================================================
+GENERATION PARAMETER TESTING
+================================================================================
+
+📦 Loading checkpoint from: out_slga_fineweb/ckpt_2000/model.pt
+Traceback (most recent call last):
+  File "/mnt/d/ai/SLGA/scripts/test_generation_parameters.py", line 425, in <module>
+    results, configurations, prompts = run_experiments(args.checkpoint, args.device)
+                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/d/ai/SLGA/scripts/test_generation_parameters.py", line 167, in run_experiments
+    model.load_state_dict(checkpoint['model_state_dict'])
+                          ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+KeyError: 'model_state_dict'

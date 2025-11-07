@@ -1,0 +1,201 @@
+{
+  "configuration_comparison": {
+    "baseline": {
+      "batch_size": 4,
+      "accum_steps": 16,
+      "effective_batch": 64,
+      "gpu_utilization": "40-50%",
+      "vram_usage": "4-5 GB",
+      "steps_per_sec": 0.55,
+      "training_time_hours": 50.5,
+      "global_warmup_start": 30000,
+      "global_warmup_end": 50000
+    },
+    "optimized_3090": {
+      "batch_size": 16,
+      "accum_steps": 4,
+      "effective_batch": 64,
+      "gpu_utilization": "75-85%",
+      "vram_usage": "8 GB",
+      "steps_per_sec": 0.99,
+      "training_time_hours": 28.1,
+      "global_warmup_start": 1000,
+      "global_warmup_end": 5000
+    },
+    "improvements": {
+      "throughput_increase": "1.8x",
+      "gpu_util_increase": "+60%",
+      "time_saved_hours": 22.4,
+      "warmup_starts_earlier": "29x earlier",
+      "update_frequency": "4x faster"
+    }
+  },
+  "model_statistics": {
+    "parameters": {
+      "total": 65340928,
+      "embeddings": 26780160,
+      "transformer_blocks": 38559744,
+      "per_layer": 3213312,
+      "size_fp16_mb": 131,
+      "size_fp32_mb": 261
+    },
+    "architecture": {
+      "n_layers": 12,
+      "embed_dim": 512,
+      "num_heads": 8,
+      "head_dim": 64,
+      "ff_multiplier": 4,
+      "max_seq_len": 2048
+    },
+    "attention": {
+      "local_window": 128,
+      "global_k": 24,
+      "global_k_per_head": 3,
+      "total_attention_positions": 152,
+      "full_attention_positions": 2048,
+      "complexity_reduction": "27000x"
+    }
+  },
+  "performance_metrics": {
+    "throughput_by_phase": {
+      "phase_1_384": {
+        "tokens_per_sec": 6082,
+        "steps_per_sec": 0.99
+      },
+      "phase_2_1024": {
+        "tokens_per_sec": 9994,
+        "steps_per_sec": 0.61
+      },
+      "phase_3_2048": {
+        "tokens_per_sec": 11469,
+        "steps_per_sec": 0.35
+      }
+    },
+    "memory_breakdown_gb": {
+      "model_params": 0.13,
+      "optimizer_states": 0.52,
+      "activations": 3.2,
+      "gradients": 0.13,
+      "attention_cache": 1.5,
+      "framework_overhead": 1.0,
+      "safety_margin": 1.5,
+      "total_used": 7.98,
+      "total_available": 24.0,
+      "utilization_percent": 33.3
+    },
+    "flops_analysis": {
+      "forward_gflops_per_sample": 116,
+      "fwd_bwd_gflops_per_sample": 348,
+      "per_iteration_tflops": 5.57,
+      "achieved_tflops_per_sec": 1.95,
+      "rtx_3090_peak_tflops": 142,
+      "mfu_percent": 1.6,
+      "note": "Memory-bound operations, typical for transformers"
+    }
+  },
+  "training_schedule": {
+    "curriculum": {
+      "phase_1": {
+        "steps": "0-15K",
+        "seq_len": 384,
+        "duration_hours": 4.2
+      },
+      "phase_2": {
+        "steps": "15K-25K",
+        "seq_len": 1024,
+        "duration_hours": 4.6
+      },
+      "phase_3": {
+        "steps": "25K-100K",
+        "seq_len": 2048,
+        "duration_hours": 19.3
+      }
+    },
+    "global_warmup": {
+      "start_step": 1000,
+      "end_step": 5000,
+      "ramp_function": "linear 0->1"
+    },
+    "expected_perplexity": {
+      "5k_steps": {
+        "train": "35-40",
+        "val": "38-43"
+      },
+      "15k_steps": {
+        "train": "22-25",
+        "val": "25-28"
+      },
+      "25k_steps": {
+        "train": "18-20",
+        "val": "20-23"
+      },
+      "50k_steps": {
+        "train": "14-16",
+        "val": "16-19"
+      },
+      "100k_steps": {
+        "train": "12-14",
+        "val": "14-17"
+      }
+    }
+  },
+  "hyperparameter_sensitivity": {
+    "critical_high_impact": {
+      "batch_size": {
+        "current": 16,
+        "safe_range": "12-20",
+        "ppl_impact": "\u00b10.5",
+        "throughput_impact": "\u00b125%"
+      },
+      "learning_rate": {
+        "current": 0.0002,
+        "safe_range": "1e-4 to 3e-4",
+        "ppl_impact": "\u00b10.8"
+      },
+      "global_k": {
+        "current": 24,
+        "safe_range": "16-32",
+        "ppl_impact": "\u00b10.3"
+      }
+    },
+    "secondary_medium_impact": {
+      "warmup_steps": {
+        "current": 2000,
+        "safe_range": "1K-3K",
+        "impact": "stability"
+      },
+      "grad_clip": {
+        "current": 1.0,
+        "safe_range": "0.5-2.0",
+        "impact": "gradient_control"
+      },
+      "local_window": {
+        "current": 128,
+        "safe_range": "64-256",
+        "ppl_impact": "\u00b10.2"
+      }
+    },
+    "architectural_low_impact": {
+      "gated_fusion": {
+        "enabled": true,
+        "ppl_improvement": 0.3,
+        "param_cost": "64K"
+      },
+      "learned_landmarks": {
+        "enabled": true,
+        "ppl_improvement": 0.5,
+        "param_cost": "131K"
+      },
+      "diverse_topk": {
+        "enabled": true,
+        "ppl_improvement": 0.2,
+        "param_cost": "0"
+      },
+      "dilated_windows": {
+        "enabled": true,
+        "ppl_improvement": 0.1,
+        "param_cost": "0"
+      }
+    }
+  }
+}
