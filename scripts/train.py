@@ -1,16 +1,16 @@
 # train.py
 """
-Script d'entraînement principal pour SLGA
+Main training script for SLGA (Sparse Landmark Global Attention)
 
-Inclut:
-- AMP (Automatic Mixed Precision)
+Includes:
+- Automatic Mixed Precision (AMP)
 - Gradient accumulation
 - Learning rate warmup + cosine decay
-- Loss auxiliaires (diversity, sparsity)
-- Warmup progressif du global attention
-- Validation périodique
+- Auxiliary losses (diversity, sparsity)
+- Progressive global attention warmup
+- Periodic validation
 - Checkpointing
-- Logging W&B optionnel
+- Optional W&B logging
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ import math
 import time
 import yaml
 import torch
+import shutil
 import threading
 import subprocess
 
@@ -31,6 +32,7 @@ from transformers import get_cosine_schedule_with_warmup
 from accelerate import Accelerator
 from tqdm.auto import tqdm
 from typing import Optional
+from torch.optim.lr_scheduler import _LRScheduler
 
 from src.model import Config, LLMTransformer
 from src.data import get_tokenizer, load_text_dataset, CollatorLocal, CollatorLocalGlobal
@@ -42,15 +44,130 @@ from src.monitoring import compute_long_dependency_recall
 
 from torch.utils.tensorboard import SummaryWriter
 
+
+def _unwrap_scheduler(scheduler: Optional[_LRScheduler]) -> Optional[_LRScheduler]:
+    """
+    Unwrap nested Accelerate schedulers to reach the underlying PyTorch scheduler.
+
+    Accelerate wraps schedulers multiple times, this function peels back the layers
+    to get to the actual torch scheduler for direct manipulation.
+    """
+    current = scheduler
+    visited = set()
+    while current is not None and hasattr(current, "scheduler") and id(current) not in visited:
+        visited.add(id(current))
+        current = getattr(current, "scheduler")
+    return current
+
+
+def apply_lr_from_config(
+    optimizer: torch.optim.Optimizer,
+    scheduler: Optional[_LRScheduler],
+    base_lr: float,
+    scorer_lr_multiplier: float,
+) -> None:
+    """
+    Re-sync optimizer and scheduler learning rates with config values after wrapping/resuming.
+
+    This ensures that after loading checkpoints or wrapping with Accelerate,
+    the learning rates match the intended values from the config.
+    """
+    real_scheduler = _unwrap_scheduler(scheduler)
+
+    target_lrs = []
+    for group in optimizer.param_groups:
+        name = group.get("name", "")
+        lr = base_lr * scorer_lr_multiplier if name == "scorer" else base_lr
+        group["lr"] = lr
+        if "initial_lr" in group:
+            group["initial_lr"] = lr
+        target_lrs.append(lr)
+
+    if real_scheduler is not None:
+        if hasattr(real_scheduler, "base_lrs"):
+            real_scheduler.base_lrs = list(target_lrs)
+        if hasattr(real_scheduler, "_last_lr"):
+            real_scheduler._last_lr = list(target_lrs)
+
+
+def build_extra_state(
+    best_overall: dict[str, float | int],
+    best_loss_per_sequence: dict[int, dict[str, float | int]],
+) -> dict:
+    """
+    Create a serializable state dictionary for checkpoint metadata.
+
+    This includes best validation losses and their corresponding steps,
+    which are saved with checkpoints for tracking training progress.
+    """
+    return {
+        "best_overall": dict(best_overall),
+        "best_loss_per_sequence": {
+            int(k): {"loss": float(v["loss"]), "step": int(v.get("step", -1))}
+            for k, v in best_loss_per_sequence.items()
+        },
+    }
+
+
+def run_quick_generate(config_path: str, checkpoint_dir: str) -> None:
+    """
+    Launch a quick text generation run to inspect the latest checkpoint quality.
+
+    This runs the generate.py script with minimal parameters to produce sample text,
+    helping verify that checkpoints are working and generating reasonable output.
+    """
+    script_path = os.path.join(os.path.dirname(__file__), "generate.py")
+    checkpoint_dir = os.path.abspath(checkpoint_dir)
+    config_path = os.path.abspath(config_path)
+
+    if not os.path.isdir(checkpoint_dir):
+        print(f"⚠️  Generation skipped, checkpoint dir missing: {checkpoint_dir}")
+        return
+
+    cmd = [
+        sys.executable,
+        script_path,
+        "--config",
+        config_path,
+        "--prompt",
+        "Albert Einstein (14 March 1879 – 18 April 1955) was",
+        "--temperature",
+        "0.7",
+        "--repetition-penalty",
+        "1.25",
+        "--no-repeat-ngram-size",
+        "4",
+        "--max-tokens",
+        "50",
+        "--checkpoint",
+        checkpoint_dir,
+    ]
+
+    print(f"▶ Quick generate from {checkpoint_dir}...")
+    try:
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        if result.stdout:
+            print(result.stdout.strip())
+        if result.stderr:
+            print(result.stderr.strip())
+    except Exception as exc:  # pylint: disable=broad-except
+        print(f"⚠️  Generation preview failed: {exc}")
+
 def get_current_seq_len(step: int, cfg: dict) -> int:
     """
-    Calcule la longueur de séquence actuelle selon curriculum.
+    Calculate the current sequence length according to curriculum learning schedule.
 
     Progression: seq_len_start -> seq_len_mid -> seq_len_final
 
+    This implements a gradual increase in sequence length during training to improve
+    stability and allow the model to learn both short and long-range dependencies.
+
     Args:
         step: Forward pass counter (NOT optimizer step)
-        cfg: Config dict
+        cfg: Training configuration dictionary
+
+    Returns:
+        Current sequence length for this training step
 
     Note: This uses forward pass steps, not optimizer steps!
     """
@@ -76,13 +193,17 @@ def get_current_seq_len(step: int, cfg: dict) -> int:
 
 def get_global_warmup_weight(step: int, cfg: dict) -> float:
     """
-    Calcule le poids de warmup pour attention globale.
+    Calculate the warmup weight for global attention.
 
-    Permet d'activer progressivement le global pour éviter instabilités.
+    This allows progressive activation of global attention to avoid instability
+    during early training when the model hasn't learned good landmark selection.
 
     Args:
         step: Forward pass counter (NOT optimizer step)
-        cfg: Config dict
+        cfg: Training configuration dictionary
+
+    Returns:
+        Weight between 0.0 and 1.0 for global attention contribution
 
     Note: This uses forward pass steps, not optimizer steps!
     """
@@ -107,7 +228,12 @@ def _run_command(cmd: list[str]) -> str:
 
 
 def log_system_info(tag: str = "SNAPSHOT") -> None:
-    """Emit a GPU/RAM/FS snapshot so it lands in the training log."""
+    """
+    Emit a system snapshot including GPU/RAM/FS information for logging.
+
+    This collects various system metrics that are useful for monitoring
+    training stability and resource usage over time.
+    """
     commands = {
         "date": ["date"],
         "uname": ["uname", "-a"],
@@ -171,20 +297,23 @@ def cross_entropy_shifted(
     logits: torch.Tensor, labels: torch.Tensor, pad_id: int
 ) -> torch.Tensor:
     """
-    Cross-entropy loss avec shift pour causal LM.
+    Compute cross-entropy loss with proper shifting for causal language modeling.
 
     Args:
-        logits: (B, L, V)
-        labels: (B, L) - DÉJÀ shiftés par le collator, avec -100 pour pads
-        pad_id: DEPRECATED - on ignore -100 maintenant
+        logits: Model output logits (B, L, V)
+        labels: Target labels (B, L) - already shifted by collator, with -100 for padding
+        pad_id: DEPRECATED - padding is now handled with -100 in labels
 
     Returns:
-        loss: Scalaire
+        Loss scalar tensor
+
+    Note: The collator has already shifted labels, so logits[i] predicts labels[i],
+    not labels[i+1]. We just remove the last position since there's no target for it.
     """
-    # IMPORTANT: Le collator a DÉJÀ shifté les labels!
-    # labels[i] contient le token suivant pour input_ids[i]
-    # Donc logits[i] doit prédire labels[i], PAS labels[i+1]!
-    # On retire juste la dernière position (pas de target pour elle)
+    # IMPORTANT: The collator has ALREADY shifted the labels!
+    # labels[i] contains the token following input_ids[i]
+    # So logits[i] should predict labels[i], NOT labels[i+1]!
+    # We just remove the last position (no target for it)
     logits_shifted = logits[:, :-1, :].contiguous()  # (B, L-1, V)
     labels_shifted = labels[:, :-1].contiguous()     # (B, L-1)
 
@@ -200,14 +329,17 @@ def cross_entropy_shifted(
 
 def build_loaders(cfg: dict, tokenizer=None) -> tuple:
     """
-    Construit tokenizer et dataloaders.
-    
+    Build tokenizer and data loaders for training and validation.
+
+    Handles dataset loading, automatic downloading if needed, and creates
+    appropriate collators based on whether learned landmarks are used.
+
     Returns:
-        tokenizer, train_loader, val_loader
+        tuple: (tokenizer, train_loader, val_loader)
     """
     tokenizer = tokenizer or get_tokenizer(cfg["tokenizer"])
     
-    # Datasets
+    # Load datasets
     try:
         ds_train = load_text_dataset(
             cfg["data"]["dataset"],
@@ -220,19 +352,59 @@ def build_loaders(cfg: dict, tokenizer=None) -> tuple:
             cfg["data"]["split_val"],
         )
     except Exception as e:
-        print(f"Warning: Could not load validation split: {e}")
-        print("Using subset of training data for validation")
-        ds_all = load_text_dataset(
-            cfg["data"]["dataset"],
-            cfg["data"].get("subset"),
-            cfg["data"]["split_train"],
-        )
-        # Split manuel
-        split_idx = int(len(ds_all) * 0.95)
-        ds_train = ds_all.select(range(split_idx))
-        ds_val = ds_all.select(range(split_idx, len(ds_all)))
+        print(f"Warning: Could not load dataset: {e}")
+        print("Attempting to download dataset automatically...")
+        
+        # Auto-download dataset
+        download_script = os.path.join(os.path.dirname(__file__), "download_dataset.py")
+        dataset_name = cfg["data"]["dataset"]
+        subset = cfg["data"].get("subset")
+        split_train = cfg["data"]["split_train"]
+        
+        # Download training split
+        cmd = [sys.executable, download_script, "--dataset", dataset_name, "--split", split_train]
+        if subset:
+            cmd.extend(["--subset", subset])
+        
+        print(f"Running: {' '.join(cmd)}")
+        try:
+            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            print("Download output:")
+            print(result.stdout)
+            if result.stderr:
+                print("Download stderr:")
+                print(result.stderr)
+        except subprocess.CalledProcessError as download_error:
+            print(f"❌ Failed to download dataset: {download_error}")
+            print("Please download the dataset manually or check your configuration.")
+            raise download_error
+        
+        # Retry loading after download
+        try:
+            ds_train = load_text_dataset(
+                cfg["data"]["dataset"],
+                cfg["data"].get("subset"),
+                cfg["data"]["split_train"],
+            )
+            ds_val = load_text_dataset(
+                cfg["data"]["dataset"],
+                cfg["data"].get("subset"),
+                cfg["data"]["split_val"],
+            )
+        except Exception as retry_error:
+            print(f"Warning: Could not load validation split after download: {retry_error}")
+            print("Using subset of training data for validation")
+            ds_all = load_text_dataset(
+                cfg["data"]["dataset"],
+                cfg["data"].get("subset"),
+                cfg["data"]["split_train"],
+            )
+            # Manual split
+            split_idx = int(len(ds_all) * 0.95)
+            ds_train = ds_all.select(range(split_idx))
+            ds_val = ds_all.select(range(split_idx, len(ds_all)))
     
-    # Limiter taille si spécifié
+    # Limit dataset size if specified
     max_train = cfg["data"].get("max_train_samples")
     max_val = cfg["data"].get("max_val_samples")
     
@@ -262,7 +434,7 @@ def build_loaders(cfg: dict, tokenizer=None) -> tuple:
     collate_train = build_collator(seq_len_final)
     collate_val = build_collator(cfg["train"].get("seq_len_final", seq_len_final))
     
-    # Dataloaders
+    # DataLoaders
     train_loader = DataLoader(
         ds_train,
         batch_size=cfg["train"]["batch_size"],
@@ -273,12 +445,12 @@ def build_loaders(cfg: dict, tokenizer=None) -> tuple:
         pin_memory=True,
     )
     
-    # Collator validation : accepte texte brut ou jeux déjà tokenisés
+    # Validation collator: accepts raw text or pre-tokenized datasets
     def collate_val_reduced(examples):
         """
-        Collator validation robuste (gère texte brut OU jeux déjà tokenisés).
-        - Tronque/pad à 512 (+1 pour le shift labels).
-        - Ne dépend d'aucune clé spécifique: détecte 'input_ids' ou un champ texte.
+        Robust validation collator that handles both raw text and pre-tokenized datasets.
+        - Truncates/pads to 512 (+1 for label shifting).
+        - Auto-detects format: looks for 'input_ids' or text fields.
         """
         import torch
         max_len_val = 512
@@ -290,7 +462,7 @@ def build_loaders(cfg: dict, tokenizer=None) -> tuple:
                 if not torch.is_tensor(ids):
                     ids = torch.as_tensor(ids, dtype=torch.long)
                 ids = ids.view(-1)
-                # tronque/pad à max_len_val+1
+                # truncate/pad to max_len_val+1
                 if ids.numel() >= max_len_val + 1:
                     ids = ids[: max_len_val + 1]
                 else:
@@ -299,11 +471,11 @@ def build_loaders(cfg: dict, tokenizer=None) -> tuple:
                 tens.append(ids)
             input_ids = torch.stack(tens, dim=0)  # (B, L+1)
 
-            # Créer input_ids et labels AVANT masking
+            # Create input_ids and labels BEFORE masking
             input_ids_final = input_ids[:, :-1]  # (B, L)
             labels = input_ids[:, 1:].clone()  # (B, L)
 
-            # Masquer les tokens de padding avec -100 après mise en forme
+            # Mask padding tokens with -100 after setup
             pad_mask = (labels == pad_id)
             labels[pad_mask] = -100
 
@@ -313,35 +485,35 @@ def build_loaders(cfg: dict, tokenizer=None) -> tuple:
                 "cache_global_ids": None,
             }
 
-        # 1) Cas pré-tokenisé: chaque exemple contient 'input_ids'
+        # 1) Pre-tokenized case: each example contains 'input_ids'
         ex0 = examples[0]
         if isinstance(ex0, dict) and "input_ids" in ex0:
             return _stack_input_ids([ex["input_ids"] for ex in examples])
 
-        # 2) Cas texte brut: chercher une clé texte plausible
+        # 2) Raw text case: find a text key
         text_key = None
         if isinstance(ex0, dict):
             for k in ("text", "content", "document", "raw", "prompt"):
                 if k in ex0 and isinstance(ex0[k], str):
                     text_key = k
                     break
-        # 2b) Exemple est directement une string
+        # 2b) Example is directly a string
         if text_key is None and isinstance(ex0, str):
             texts = list(examples)
         elif text_key is not None:
             texts = [ex[text_key] for ex in examples]
         else:
-            # Dernier recours: prendre le premier champ string trouvé
+            # Last resort: take first string field found
             if isinstance(ex0, dict):
                 candidates = [k for k, v in ex0.items() if isinstance(v, str)]
                 if candidates:
                     texts = [ex[candidates[0]] for ex in examples]
                 else:
-                    raise KeyError(f"Impossible de trouver un champ texte. Clés: {list(ex0.keys())}")
+                    raise KeyError(f"Unable to find text field. Keys: {list(ex0.keys())}")
             else:
-                raise KeyError(f"Format d'exemple non supporté: {type(ex0)}")
+                raise KeyError(f"Unsupported example format: {type(ex0).__name__}")
 
-        # Tokenization texte → input_ids (L+1)
+        # Tokenize text → input_ids (L+1)
         encoded = tokenizer(
             texts,
             max_length=max_len_val + 1,
@@ -351,11 +523,11 @@ def build_loaders(cfg: dict, tokenizer=None) -> tuple:
         )
         input_ids = encoded["input_ids"]
 
-        # Créer input_ids et labels AVANT masking
+        # Create input_ids and labels BEFORE masking
         input_ids_final = input_ids[:, :-1]  # (B, L)
         labels = input_ids[:, 1:].clone()  # (B, L)
 
-        # Masquer les tokens de padding avec -100
+        # Mask padding tokens with -100
         pad_mask = (labels == pad_id)
         labels[pad_mask] = -100
 
@@ -365,7 +537,7 @@ def build_loaders(cfg: dict, tokenizer=None) -> tuple:
             "cache_global_ids": None,
         }
 
-    # 🔍 DEBUG: Afficher le format du premier exemple de validation
+    # 🔍 DEBUG: Display validation dataset format
     if len(ds_val) > 0:
         ex0 = ds_val[0]
         if isinstance(ex0, dict):
@@ -373,20 +545,20 @@ def build_loaders(cfg: dict, tokenizer=None) -> tuple:
         else:
             print(f"🔍 DEBUG Dataset format: type={type(ex0).__name__}")
 
-    # Validation avec batch_size réduit pour éviter OOM
-    val_batch_size = max(1, cfg["train"]["batch_size"] // 2)  # Divisé par 2 pour la mémoire
+    # Validation with reduced batch_size to avoid OOM
+    val_batch_size = max(1, cfg["train"]["batch_size"] // 2)  # Half of train batch size
     print(f"Validation config: batch_size={val_batch_size} (train: {cfg['train']['batch_size']}), seq_len=512 (train: up to 2048)")
 
-    # 🔧 ASTUCE DEBUG: num_workers=0 temporairement pour voir stacktrace complète
-    # Si validation fonctionne, remettre num_workers=2 pour performance
+    # 🔧 DEBUG ASTUCE: num_workers=0 temporarily to see full stacktrace
+    # If validation works, revert to num_workers=2 for performance
     val_loader = DataLoader(
         ds_val,
         batch_size=val_batch_size,
         shuffle=False,
         drop_last=False,
-        collate_fn=collate_val_reduced,  # 🔧 Collator robuste auto-détection
-        num_workers=0,  # 🔧 TEMPORAIRE: 0 pour debug, remettre 2 une fois stable
-        pin_memory=False,  # 🔧 TEMPORAIRE: désactivé pour debug
+        collate_fn=collate_val_reduced,  # 🔧 Robust auto-detection collator
+        num_workers=0,  # 🔧 TEMPORARY: 0 for debug, revert to 2 when stable
+        pin_memory=False,  # 🔧 TEMPORARY: disabled for debug
     )
     
     return tokenizer, train_loader, val_loader
@@ -400,10 +572,10 @@ def validate(
     max_batches: Optional[int] = None,
 ) -> dict:
     """
-    Évalue le modèle sur validation set.
+    Evaluate the model on the validation set.
 
     Returns:
-        metrics: Dict avec 'loss' et 'perplexity'
+        dict: Metrics containing 'loss' and 'perplexity'
     """
     model.eval()
 
@@ -411,7 +583,7 @@ def validate(
     total_tokens = 0
     num_batches = 0
 
-    # Progress bar pour validation
+    # Progress bar for validation
     import sys
     max_b = max_batches if max_batches else len(val_loader)
 
@@ -425,7 +597,7 @@ def validate(
             cache_ids = batch.get("cache_global_ids")
             cache_ids = cache_ids.to(device) if cache_ids is not None else None
 
-            # Vérifier les labels avant le forward pour détecter les valeurs hors vocabulaire
+            # Check labels before forward to detect out-of-vocab values
             if hasattr(model, 'cfg') and hasattr(model.cfg, 'vocab_size'):
                 vocab_size = model.cfg.vocab_size
             elif hasattr(model, 'lm_head') and hasattr(model.lm_head, 'out_features'):
@@ -433,7 +605,7 @@ def validate(
             else:
                 vocab_size = 50257  # Fallback to GPT-2 default
 
-            # Garder ces opérations hors du graphe pour éviter les rétentions CUDA
+            # Keep these operations outside the graph to avoid CUDA retention
             invalid_mask = (labels != -100) & ((labels < 0) | (labels >= vocab_size))
             invalid_count = invalid_mask.sum().item()
             if invalid_count > 0:
@@ -449,39 +621,39 @@ def validate(
                 # Force stop to prevent CUDA crash
                 raise ValueError(f"Invalid labels detected in validation batch {i}")
 
-            # Forward
+            # Forward pass
             logits = model(input_ids, cache_global_ids=cache_ids)
 
-            # Loss
+            # Loss calculation
             loss = cross_entropy_shifted(logits, labels, pad_id)
 
-            # Compter les tokens valides (ignore -100)
+            # Count valid tokens (ignore -100)
             num_tokens = (labels != -100).sum().item()
 
             total_loss += loss.item() * num_tokens
             total_tokens += num_tokens
             num_batches += 1
 
-            # Libérer explicitement les tenseurs pour éviter l'accumulation mémoire
+            # Explicitly free tensors to prevent memory accumulation
             del input_ids, labels, cache_ids, logits, loss, invalid_mask
 
-            if i % 5 == 0 and torch.cuda.is_available():  # Tous les 5 batches
+            if i % 5 == 0 and torch.cuda.is_available():  # Every 5 batches
                 torch.cuda.empty_cache()
 
             # Progress indicator
             if (i + 1) % 5 == 0 or (i + 1) == max_b:
                 print(f"\r  Validation: {i+1}/{max_b} batches...", end='', flush=True)
 
-    print()  # New line après progress
+    print()  # New line after progress
     
     avg_loss = total_loss / max(total_tokens, 1)
-    perplexity = math.exp(min(avg_loss, 10))  # Cap pour stabilité
+    perplexity = math.exp(min(avg_loss, 10))  # Cap for stability
     
     return {"loss": avg_loss, "perplexity": perplexity}
 
 
 def main():
-    """Boucle d'entraînement principale"""
+    """Main training loop function"""
 
     # Parse arguments
     import argparse
@@ -491,29 +663,36 @@ def main():
     parser.add_argument("--resume", action="store_true", help="Resume from latest checkpoint")
     args = parser.parse_args()
 
-    # Réduire la fragmentation CUDA (nouvelle variable recommandée). Garder l'ancienne pour compat.
+    config_file_path = os.path.abspath(args.config)
+
+    # Reduce CUDA fragmentation (new recommended variable, keep old for compatibility)
     if os.environ.get("PYTORCH_ALLOC_CONF") is None:
         os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
     if os.environ.get("PYTORCH_CUDA_ALLOC_CONF") is None:
         os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-    # Charger config
-    with open(args.config) as f:
+    # Load config
+    with open(config_file_path) as f:
         cfg = yaml.safe_load(f)
+
+    # Create best_sequence folder from the beginning
+    out_dir = cfg["train"].get("out_dir", "out_slga")
+    best_sequence_root = os.path.join(out_dir, "best_sequence")
+    os.makedirs(best_sequence_root, exist_ok=True)
 
     log_cfg = cfg.get("log", {})
 
     # Override max_steps if provided
     if args.max_steps is not None:
         cfg["train"]["max_steps"] = args.max_steps
-        # Ajuster le warmup proportionnellement si max_steps est réduit
+        # Adjust warmup proportionally if max_steps is reduced
         if args.max_steps < cfg["train"]["warmup_steps"]:
             original_warmup = cfg["train"]["warmup_steps"]
-            adjusted_warmup = max(100, args.max_steps // 2)  # 50% du total ou min 100
+            adjusted_warmup = max(100, args.max_steps // 2)  # 50% of total or min 100
             cfg["train"]["warmup_steps"] = adjusted_warmup
-            print(f"⚠️  Warmup ajusté: {original_warmup} → {adjusted_warmup} (max_steps={args.max_steps})")
+            print(f"⚠️  Warmup adjusted: {original_warmup} → {adjusted_warmup} (max_steps={args.max_steps})")
 
-    # TensorBoard writer (créé après lecture de la config)
+    # TensorBoard writer (created after config loading)
     if log_cfg.get("tensorboard", False):
         writer = SummaryWriter(log_dir=f"{cfg['save']['out_dir']}/tensorboard")
     else:
@@ -552,7 +731,7 @@ def main():
             system_monitor_thread.start()
     device = accelerator.device
     
-    # W&B logging (optionnel)
+    # W&B logging (optional)
     if log_cfg.get("wandb", False):
         import wandb
         run_name = cfg["log"].get("run_name") or f"slga_{cfg['model']['embed_dim']}d_{cfg['model']['n_layers']}l"
@@ -567,7 +746,7 @@ def main():
     if tokenizer.vocab_size is not None:
         cfg["model"]["vocab_size"] = tokenizer.vocab_size
 
-    # Modèle
+    # Model
     model_cfg = Config(**cfg["model"])
     if "grad_checkpointing" in cfg["train"]:
         model_cfg.grad_checkpointing = cfg["train"]["grad_checkpointing"]
@@ -589,22 +768,22 @@ def main():
     pad_id = tokenizer.pad_token_id
     
     # Optimizer with separate LR for landmark scorer
-    scorer_lr_multiplier = cfg["train"].get("scorer_lr_multiplier", 5.0)  # 5× par défaut
+    scorer_lr_multiplier = cfg["train"].get("scorer_lr_multiplier", 5.0)  # 5× default
     base_lr = cfg["train"]["lr"]
 
-    # Séparer paramètres: scorer vs reste du modèle
+    # Separate parameters: scorer vs rest of model
     scorer_params = []
     other_params = []
 
     if model.landmark_selector is not None:
         scorer_params = list(model.landmark_selector.scorer.parameters())
-        # Tous les autres paramètres
+        # All other parameters
         scorer_param_ids = {id(p) for p in scorer_params}
         other_params = [p for p in model.parameters() if id(p) not in scorer_param_ids]
     else:
         other_params = list(model.parameters())
 
-    # Créer param groups
+    # Create param groups
     param_groups = [
         {
             "params": other_params,
@@ -616,11 +795,11 @@ def main():
     if scorer_params:
         param_groups.append({
             "params": scorer_params,
-            "lr": base_lr * scorer_lr_multiplier,  # LR plus élevé pour scorer
+            "lr": base_lr * scorer_lr_multiplier,  # Higher LR for scorer
             "name": "scorer",
         })
         if accelerator.is_main_process:
-            print(f"🔧 Scorer LR: {base_lr * scorer_lr_multiplier:.2e} (×{scorer_lr_multiplier} vs modèle)")
+            print(f"🔧 Scorer LR: {base_lr * scorer_lr_multiplier:.2e} (×{scorer_lr_multiplier} vs model)")
 
     optimizer = torch.optim.AdamW(
         param_groups,
@@ -659,10 +838,12 @@ def main():
         num_training_steps=total_steps // accum_steps,    # 100000 → 25000 (with accum=4)
     )
     
-    # Prepare avec Accelerator
+    # Prepare with Accelerator
     model, optimizer, train_loader, val_loader, scheduler = accelerator.prepare(
         model, optimizer, train_loader, val_loader, scheduler
     )
+
+    apply_lr_from_config(optimizer, scheduler, base_lr, scorer_lr_multiplier)
     
     # AMP setup
     amp_enabled = cfg["train"].get("amp", True)
@@ -699,19 +880,53 @@ def main():
                 print(f"🔄 RESUMING FROM CHECKPOINT: {latest_ckpt}")
                 print(f"{'='*80}\n")
 
-            # Unwrap model for loading (si wrapped par Accelerator)
+            # Unwrap model for loading (if wrapped by Accelerator)
             unwrapped_model = accelerator.unwrap_model(model)
 
             # Load checkpoint
+            resume_state: dict = {}
             step = load_checkpoint(
                 checkpoint_path,
                 unwrapped_model,
                 optimizer,
                 scheduler,
-                device=str(device)
+                device=str(device),
+                extra_state=resume_state,
             )
             # Calculate optimizer_step from loaded step
             optimizer_step = step // accum_steps
+
+            if "best_overall" in resume_state:
+                loaded_overall = resume_state["best_overall"]
+                best_overall = {
+                    "loss": float(loaded_overall.get("loss", float("inf"))),
+                    "step": int(loaded_overall.get("step", -1)),
+                }
+            elif "best_overall_loss" in resume_state:
+                best_overall = {
+                    "loss": float(resume_state["best_overall_loss"]),
+                    "step": -1,
+                }
+            elif "best_val_loss" in resume_state:
+                best_overall = {
+                    "loss": float(resume_state["best_val_loss"]),
+                    "step": -1,
+                }
+            if "best_loss_per_sequence" in resume_state:
+                best_loss_per_sequence = {}
+                for k, v in resume_state["best_loss_per_sequence"].items():
+                    if isinstance(v, dict):
+                        best_loss_per_sequence[int(k)] = {
+                            "loss": float(v.get("loss", float("inf"))),
+                            "step": int(v.get("step", -1)),
+                        }
+                    else:
+                        best_loss_per_sequence[int(k)] = {
+                            "loss": float(v),
+                            "step": -1,
+                        }
+
+            apply_lr_from_config(optimizer, scheduler, base_lr, scorer_lr_multiplier)
 
             if accelerator.is_main_process:
                 print(f"\n✅ Resumed from step {step} (optimizer_step {optimizer_step})\n")
@@ -723,21 +938,23 @@ def main():
 
     model.train()
 
-    # Tracking pour métriques de performance
+    # Performance metrics tracking
     step_start_time = time.time()
     steps_since_log = 0
 
-    # Variables persistantes pour métriques (éviter 0.00 dans logs)
+    # Persistent variables for metrics (avoid 0.00 in logs)
     last_grad_norm = 0.0
     last_num_landmarks = 0
-    last_spacing_loss = 0.0  # remplace l'ancienne last_div_loss
+    last_spacing_loss = 0.0  # replaces old last_div_loss
     last_spar_loss = 0.0
-    last_mass_ratio = 0.0  # Mass concentration dans top-G landmarks
+    last_mass_ratio = 0.0  # Mass concentration in top-G landmarks
+    best_overall: dict[str, float | int] = {"loss": float("inf"), "step": -1}
+    best_loss_per_sequence: dict[int, dict[str, float | int]] = {}
 
-    # Infinite loop sur dataloader
+    # Infinite loop over dataloader
     epoch = 0
 
-    # Real-time display (mise à jour chaque step)
+    # Real-time display (updates every step)
     if accelerator.is_main_process:
         realtime_display = RealtimeTrainingDisplay(
             max_steps=total_steps,
@@ -747,38 +964,40 @@ def main():
     else:
         realtime_display = None
 
-    # Disable tqdm (on utilise realtime_display)
+    # Disable tqdm (we use realtime_display)
     progress_bar = tqdm(
         total=total_steps,
         desc="Training",
-        disable=True,  # Toujours désactivé si realtime_display
+        disable=True,  # Always disabled if realtime_display
     )
 
-    # Petits caches CPU détachés pour logging, évitent de retenir le graphe
+    # Small CPU caches detached for logging, avoid retaining graph
     log_landmark_indices = None
     log_gate_values = None
 
     while step < total_steps:
-        epoch += 1
+        epoch += 1  # Track epochs (though we use infinite loop with step-based termination)
         
         for batch in train_loader:
-            # Curriculum seq_len (mettre à jour collator si besoin)
+            # === CORE TRAINING STEP ===
+            # Curriculum sequence length (update collator if needed)
             current_seq_len = get_current_seq_len(step, cfg)
             
             # Global warmup weight
             global_weight = get_global_warmup_weight(step, cfg)
             
-            # Charger depuis CPU, puis appliquer la troncature AVANT transfert GPU
+            # === DATA PREPARATION ===
+            # Load from CPU, then apply truncation BEFORE GPU transfer
             input_ids = batch["input_ids"]
             labels = batch["labels"]
             cache_ids = batch.get("cache_global_ids")
 
-            # Tronquer sur CPU pour réduire l'empreinte GPU
+            # Truncate on CPU to reduce GPU memory footprint
             if input_ids.size(1) > current_seq_len:
                 input_ids = input_ids[:, :current_seq_len]
                 labels = labels[:, :current_seq_len]
 
-                # Adapter les landmarks heuristiques à la nouvelle longueur
+                # Adapt heuristic landmarks to new length
                 if cache_ids is not None and not model.cfg.learned_landmarks:
                     B = cache_ids.size(0)
                     G = cache_ids.size(1)
@@ -788,15 +1007,16 @@ def main():
                 elif cache_ids is not None and model.cfg.learned_landmarks:
                     cache_ids = torch.clamp(cache_ids, 0, current_seq_len - 1)
 
-            # Transfert GPU APRÈS troncature
+            # GPU transfer AFTER truncation
             input_ids = input_ids.to(device)
             labels = labels.to(device)
             cache_ids = cache_ids.to(device) if cache_ids is not None else None
             
-            # Initialiser lambda_spar avant le bloc autocast pour toute configuration
+            # === FORWARD PASS ===
+            # Initialize lambda_spar before autocast block for all configurations
             lambda_spar = cfg["train"].get("lambda_sparsity", 0.0)
 
-            # Autocast uniquement lorsque CUDA est disponible
+            # Autocast only when CUDA is available
             use_autocast = amp_enabled and device.type == "cuda"
             if use_autocast:
                 autocast_ctx = torch.autocast(device_type="cuda", dtype=amp_dtype)
@@ -805,10 +1025,14 @@ def main():
                 autocast_ctx = nullcontext()
 
             with autocast_ctx:
+                # === MODEL FORWARD PASS ===
                 logits, aux = model(input_ids, cache_global_ids=cache_ids, return_aux=True, global_weight=global_weight)
+                
+                # === LOSS CALCULATION ===
                 loss_ce = cross_entropy_shifted(logits, labels, pad_id)
-                loss = loss_ce / accum_steps
+                loss = loss_ce / accum_steps  # Scale for gradient accumulation
 
+                # === AUXILIARY LOSSES INITIALIZATION ===
                 spacing_loss_val = 0.0
                 spar_loss_val = 0.0
                 num_landmarks_selected = 0
@@ -816,15 +1040,19 @@ def main():
                 gate_local_mean: Optional[float] = None
                 gate_local_majority: Optional[float] = None
 
+                # Extract auxiliary outputs for landmark analysis
                 landmark_indices = aux.get("landmark_indices", None)
                 landmark_scores = aux.get("landmark_scores", None)
 
+                # Count selected landmarks
                 if landmark_indices is not None and landmark_indices.numel() > 0:
                     num_landmarks_selected = landmark_indices.size(1)
 
+                # === AUXILIARY LOSSES ===
                 if landmark_indices is not None and landmark_scores is not None:
                     seq_len = input_ids.size(1)
 
+                    # Spacing loss: encourages even distribution of landmarks
                     lambda_spacing = cfg["train"].get("lambda_spacing", 0.0)
                     if lambda_spacing > 0 and num_landmarks_selected > 1:
                         spacing_loss = landmark_spacing_loss(
@@ -836,39 +1064,41 @@ def main():
                         spacing_loss_val = spacing_loss.item()
                         loss = loss + spacing_loss / accum_steps
 
+                    # Sparsity loss: encourages concentration on top landmarks
                     if lambda_spar > 0 and num_landmarks_selected > 0:
                         spar_loss = landmark_sparsity_loss(
                             selection_scores=landmark_scores,
-                            num_landmarks=num_landmarks_selected,  # NEW: paramètre adaptatif
+                            num_landmarks=num_landmarks_selected,  # NEW: adaptive parameter
                             lambda_reg=lambda_spar
                         )
                         spar_loss_val = spar_loss.item()
                         loss = loss + spar_loss / accum_steps
 
-                    # Legacy diversity loss (optionnel, pour backward compatibility)
+                    # Legacy diversity loss (optional, for backward compatibility)
                     lambda_div = cfg["train"].get("lambda_diversity", 0.0)
                     if lambda_div > 0:
-                        # NOTE: Utiliser lambda_spacing à la place (recommandé)
+                        # NOTE: Use lambda_spacing instead (recommended)
                         div_loss = landmark_diversity_loss(landmark_scores, lambda_div)
                         loss = loss + div_loss / accum_steps
 
-                # Calculer mass_in_top_g pour monitoring (même si loss constante)
+                # === MONITORING METRICS ===
+                # Calculate mass_in_top_g for monitoring (even if loss constant)
                 mass_in_top_g = 0.0
                 if lambda_spar > 0 and landmark_scores is not None and num_landmarks_selected > 0:
-                    # Recalculer pour logging (peu coûteux)
+                    # Recalculate for logging (cheap)
                     import torch.nn.functional as F
                     probs = F.softmax(landmark_scores, dim=-1)
                     _, top_g_idx = torch.topk(landmark_scores, k=num_landmarks_selected, dim=-1)
                     top_g_probs = torch.gather(probs, dim=1, index=top_g_idx)
                     mass_in_top_g = top_g_probs.sum(dim=-1).mean().item()
 
-                # Sauvegarder pour logging (valeurs persistantes)
-                last_spacing_loss = spacing_loss_val  # NEW: remplace div_loss
+                # Save for logging (persistent values)
+                last_spacing_loss = spacing_loss_val  # NEW: replaces div_loss
                 last_spar_loss = spar_loss_val
                 last_num_landmarks = num_landmarks_selected
-                last_mass_ratio = mass_in_top_g  # Nouvelle métrique
+                last_mass_ratio = mass_in_top_g  # New metric
 
-            # Détacher les gros tenseurs d'aux et conserver uniquement ce qui est utile pour logs
+            # Detach large aux tensors and keep only useful for logs
             if landmark_indices is not None:
                 try:
                     log_landmark_indices = landmark_indices.detach().to("cpu")
@@ -885,7 +1115,7 @@ def main():
             else:
                 log_gate_values = None
 
-            # Calculer métriques de gate si disponibles
+            # Calculate gate metrics if available
             if log_gate_values is not None:
                 gate_tensor = log_gate_values.float()  # (layers, B, H, L)
                 gate_flat = gate_tensor.reshape(-1)
@@ -896,15 +1126,15 @@ def main():
                     gate_local_mean = gate_flat.mean().item()
                     gate_local_majority = (gate_flat > 0.5).float().mean().item()
 
-            # Libérer références pour ne pas retenir le graphe pendant backward
+            # Free references to avoid retaining graph during backward
             landmark_scores = None
             landmark_indices = None
             aux = None
 
-# Détection NaN/Inf avant backward
+            # Detect NaN/Inf before backward
             if torch.isnan(loss) or torch.isinf(loss):
                 print(f"\n{'='*80}")
-                print(f"❌ DIVERGENCE DÉTECTÉE au step {step}!")
+                print(f"❌ DIVERGENCE DETECTED at step {step}!")
                 print(f"{'='*80}")
                 print(f"   Loss totale: {loss.item()}")
                 print(f"   Loss CE: {loss_ce.item()}")
@@ -915,21 +1145,29 @@ def main():
                 print(f"   Learning rate: {scheduler.get_last_lr()[0]:.2e}")
                 print(f"   Gradient norm (last): {last_grad_norm:.4f}")
 
-                # Sauver checkpoint de debug
+                # Save debug checkpoint
                 if accelerator.is_main_process:
                     accelerator.wait_for_everyone()
                     debug_dir = f"ckpt_{step}_diverged"
-                    save_checkpoint(model, optimizer, scheduler, out_dir, step, accelerator)
+                    save_checkpoint(
+                        model,
+                        optimizer,
+                        scheduler,
+                        out_dir,
+                        step,
+                        accelerator,
+                        extra_state=build_extra_state(best_overall, best_loss_per_sequence),
+                    )
                     print(f"   💾 Debug checkpoint sauvegardé: {out_dir}/{debug_dir}")
 
                 raise ValueError(f"Training diverged with NaN/Inf at step {step}")
 
-            # Backward
+            # === BACKWARD PASS ===
             accelerator.backward(loss)
             
-            # Gradient accumulation
+            # === GRADIENT ACCUMULATION ===
             if (step + 1) % accum_steps == 0:
-                # Calculate gradient norm BEFORE clipping (pour monitoring)
+                # Calculate gradient norm BEFORE clipping (for monitoring)
                 grad_norm = 0.0
                 if accelerator.is_main_process:
                     for p in model.parameters():
@@ -937,19 +1175,19 @@ def main():
                             param_norm = p.grad.data.norm(2)
                             grad_norm += param_norm.item() ** 2
                     grad_norm = grad_norm ** 0.5
-                    last_grad_norm = grad_norm  # Sauvegarder pour logging
+                    last_grad_norm = grad_norm  # Save for logging
 
-                    # ✅ AJOUT #3: Gradient flow monitoring (tous les 500 steps)
+                    # Gradient flow monitoring (every 500 steps)
                     if step % 500 == 0:
                         grad_norms_per_layer = {}
 
-# Utiliser named_parameters() pour éviter crash
+                        # Use named_parameters() to avoid crash
                         for name, param in model.named_parameters():
                             if param.grad is not None:
                                 layer_norm = param.grad.data.norm(2).item()
                                 grad_norms_per_layer[name] = layer_norm
 
-                        # Logger les plus gros gradients
+                        # Log the largest gradients
                         top_grads = sorted(grad_norms_per_layer.items(), key=lambda x: x[1], reverse=True)[:5]
                         print(f"\n  Top gradient norms:")
                         for name, norm in top_grads:
@@ -959,21 +1197,22 @@ def main():
                 if grad_clip > 0:
                     accelerator.clip_grad_norm_(model.parameters(), grad_clip)
 
-                # Optimizer step
+                # === OPTIMIZER STEP ===
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
 
-                # Incrémente le compteur d'étapes optimiseur après la mise à jour
+                # Increment optimizer step counter after update
                 optimizer_step += 1
 
-            step += 1
+            # === STEP MANAGEMENT ===
+            step += 1  # Increment forward pass counter
             steps_since_log += 1
             progress_bar.update(1)
 
-            # Real-time update (CHAQUE step)
+            # Real-time update (EVERY step)
             if realtime_display and accelerator.is_main_process:
-                # Calculer métriques courantes
+                # Calculate current metrics
                 if torch.cuda.is_available():
                     mem_allocated = torch.cuda.memory_allocated() / 1e9
                     mem_total = torch.cuda.get_device_properties(0).total_memory / 1e9
@@ -981,21 +1220,21 @@ def main():
                     mem_allocated = 0
                     mem_total = 0
 
-                # Calculer active landmarks (nombre de landmarks réellement sélectionnés)
+                # Calculate active landmarks (number of landmarks actually selected)
                 active_lm = 0
                 if landmark_indices is not None:
-                    # Les landmarks sélectionnés sont ceux dans landmark_indices
-                    active_lm = landmark_indices.numel() // landmark_indices.size(0)  # G landmarks par batch
-                    # Ou simplement utiliser num_landmarks_selected qui est déjà calculé
+                    # Selected landmarks are those in landmark_indices
+                    active_lm = landmark_indices.numel() // landmark_indices.size(0)  # G landmarks per batch
+                    # Or simply use num_landmarks_selected which is already calculated
                     active_lm = num_landmarks_selected
 
-                # Update ligne live
+                # Update live line
                 realtime_display.update_live(
                     step=step,
-                    loss=loss_ce.item() if step % accum_steps == 0 else None,  # Seulement après accum
+                    loss=loss_ce.item() if step % accum_steps == 0 else None,  # Only after accum
                     ppl=math.exp(min(loss_ce.item(), 10)) if step % accum_steps == 0 else None,
                     lr=scheduler.get_last_lr()[0] if step % accum_steps == 0 else None,
-                    throughput=None,  # Calculé dans section détaillée
+                    throughput=None,  # Calculated in detailed section
                     gpu_mem_gb=mem_allocated,
                     gpu_total_gb=mem_total,
                     seq_len=current_seq_len,
@@ -1030,7 +1269,7 @@ def main():
                     mem_cached = 0
                     mem_total = 0
 
-                # Calculer couverture des landmarks (portion de la séquence à distance < window)
+                # Calculate landmark coverage (portion of sequence at distance < window)
                 coverage_val = None
                 landmark_pos_hist = None
                 if log_landmark_indices is not None:
@@ -1061,7 +1300,7 @@ def main():
                     "lr": lr_current,
                     "seq_len": current_seq_len,
                     "global_weight": global_weight,
-                    "grad_norm": last_grad_norm,  # Utiliser valeur persistante
+                    "grad_norm": last_grad_norm,  # Use persistent value
                 }
 
                 if gate_entropy_val is not None:
@@ -1089,7 +1328,7 @@ def main():
                 if cfg["log"].get("wandb", False):
                     wandb.log(log_dict, step=step)
 
-                # TensorBoard - Métriques de base
+                # TensorBoard - Basic metrics
                 if writer is not None:
                     writer.add_scalar("train/loss", loss_gathered, step)
                     writer.add_scalar("train/perplexity", ppl, step)
@@ -1097,14 +1336,14 @@ def main():
                     writer.add_scalar("train/seq_len", current_seq_len, step)
                     writer.add_scalar("train/global_weight", global_weight, step)
 
-                    # Gradient norm (valeur persistante)
+                    # Gradient norm (persistent value)
                     writer.add_scalar("train/grad_norm", last_grad_norm, step)
 
                     if last_spacing_loss > 0:
                         writer.add_scalar("train/loss_spacing", last_spacing_loss, step)  
                     if last_spar_loss > 0:
                         writer.add_scalar("train/loss_sparsity", last_spar_loss, step)
-                        # 📊 Logging mass_in_top_g pour suivre évolution scorer
+                        # 📊 Logging mass_in_top_g to track scorer evolution
 
                     if gate_entropy_val is not None:
                         writer.add_scalar("train/gate_entropy", gate_entropy_val, step)
@@ -1117,23 +1356,23 @@ def main():
                         writer.add_scalar("train/landmark_coverage", coverage_val, step)
                     if landmark_pos_hist is not None:
                         writer.add_histogram("train/landmark_position_norm", landmark_pos_hist, step)
-                        # Même si loss constante au début, mass augmente quand scorer apprend
+                        # Even if loss is constant at first, mass increases when scorer learns
                         if last_mass_ratio > 0:
                             writer.add_scalar("landmarks/mass_in_top_g", last_mass_ratio, step)
 
-                    # Landmark statistics (valeur persistante)
+                    # Landmark statistics (persistent value)
                     if last_num_landmarks > 0:
                         writer.add_scalar("landmarks/num_selected", last_num_landmarks, step)
 
                     # ✅ AJOUT #2: Landmark spacing metrics
                     if log_landmark_indices is not None:
-                        landmark_indices_detached = log_landmark_indices  # (B, G) déjà CPU/detach
+                        landmark_indices_detached = log_landmark_indices  # (B, G) already CPU/detached
 
-                        # Calculer spacing entre landmarks
+                        # Calculate spacing between landmarks
                         sorted_idx = torch.sort(landmark_indices_detached, dim=-1)[0]
                         gaps = sorted_idx[:, 1:] - sorted_idx[:, :-1]
 
-# Utiliser .item() pour couper le graph
+# Use .item() to break the graph
                         spacing_mean = gaps.float().mean().item()
                         spacing_std = gaps.float().std().item()
 
@@ -1147,7 +1386,7 @@ def main():
                     writer.add_scalar("perf/gpu_memory_reserved_gb", mem_reserved, step)
                     writer.add_scalar("perf/gpu_memory_cached_gb", mem_cached, step)
 
-                # Real-time Display: Affichage détaillé
+                # Real-time Display: Detailed display
                 if realtime_display:
                     realtime_display.print_detailed(
                         step=step,
@@ -1165,7 +1404,7 @@ def main():
                         sparsity_loss=last_spar_loss,
                     )
                 else:
-                    # Fallback: Console basique si realtime_display désactivé
+                    # Fallback: Basic console if realtime_display disabled
                     global_k_cfg = cfg["model"].get("global_k", 24)
 # Display both step (forward passes) and optimizer_step for clarity
                     print(
@@ -1182,11 +1421,11 @@ def main():
                 step_start_time = time.time()
                 steps_since_log = 0
 
-                # Nettoyage des caches CPU après usage
+                # Cleanup CPU caches after use
                 log_landmark_indices = None
                 log_gate_values = None
             
-            # Validation
+            # === VALIDATION ===
             if accelerator.is_main_process and step % cfg["train"].get("eval_every", 1000) == 0:
                 print("\n=== Validation ===")
 
@@ -1200,12 +1439,13 @@ def main():
 
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-                    torch.cuda.synchronize()  # Attendre fin des opérations CUDA
+                    torch.cuda.synchronize()  # Wait for CUDA operations to finish
                     mem_before = torch.cuda.memory_allocated() / 1e9
                     mem_reserved = torch.cuda.memory_reserved() / 1e9
                     mem_total = torch.cuda.get_device_properties(0).total_memory / 1e9
                     print(f"  GPU Memory: {mem_before:.2f} GB allocated, {mem_reserved:.2f} GB reserved, {mem_total:.2f} GB total")
 
+                # === RUN VALIDATION ===
                 val_metrics = validate(
                     accelerator.unwrap_model(model),
                     val_loader,
@@ -1267,7 +1507,67 @@ def main():
                     writer.add_scalar("val/loss", val_metrics["loss"], step)
                     writer.add_scalar("val/perplexity", val_metrics["perplexity"], step)
 
-                del val_metrics  # Libérer explicitement
+                val_loss = val_metrics["loss"]
+
+                # Best per current training sequence length
+                current_seq_len = get_current_seq_len(step, cfg)
+                prev_seq_best = best_loss_per_sequence.get(
+                    current_seq_len, {"loss": float("inf"), "step": -1}
+                )
+                if val_loss < prev_seq_best["loss"]:
+                    best_loss_per_sequence[current_seq_len] = {"loss": val_loss, "step": step}
+                    accelerator.wait_for_everyone()
+                    if accelerator.is_main_process:
+                        seq_dir = os.path.join("best_sequence", f"seq_{current_seq_len}")
+                        full_seq_dir = os.path.join(out_dir, seq_dir)
+                        # Explicit creation of best_sequence/seq_xxx folder
+                        os.makedirs(full_seq_dir, exist_ok=True)
+                        if os.path.isdir(full_seq_dir):
+                            shutil.rmtree(full_seq_dir)
+                        print(
+                            f"\n💾 New best for seq_len={current_seq_len}: {val_loss:.4f} (step {step})"
+                        )
+                        save_checkpoint(
+                            model,
+                            optimizer,
+                            scheduler,
+                            out_dir,
+                            step,
+                            accelerator,
+                            keep_last_n=None,
+                            extra_state=build_extra_state(best_overall, best_loss_per_sequence),
+                            custom_dir=seq_dir,
+                        )
+                        # Run generate on the best sequence
+                        run_quick_generate(config_file_path, full_seq_dir)
+
+                # Best overall across the full training run
+                if val_loss < best_overall["loss"]:
+                    best_overall = {"loss": val_loss, "step": step}
+                    accelerator.wait_for_everyone()
+                    if accelerator.is_main_process:
+                        overall_dir = "best_overall"
+                        full_overall_dir = os.path.join(out_dir, overall_dir)
+                        if os.path.isdir(full_overall_dir):
+                            shutil.rmtree(full_overall_dir)
+                        print(
+                            f"\n💾 New best overall validation loss: {val_loss:.4f} (step {step})"
+                        )
+                        save_checkpoint(
+                            model,
+                            optimizer,
+                            scheduler,
+                            out_dir,
+                            step,
+                            accelerator,
+                            keep_last_n=None,
+                            extra_state=build_extra_state(best_overall, best_loss_per_sequence),
+                            custom_dir=overall_dir,
+                        )
+                        # Run generate on the best overall
+                        run_quick_generate(config_file_path, full_overall_dir)
+
+                del val_metrics  # Explicitly free memory
                 gc.collect()
 
                 if torch.cuda.is_available():
@@ -1275,7 +1575,7 @@ def main():
 
                 model.train()
             
-            # Checkpoint
+            # === CHECKPOINTING ===
             save_every = cfg["train"].get("save_every", 5000)
             is_save_step = step % save_every == 0
             is_main = accelerator.is_main_process
@@ -1285,31 +1585,53 @@ def main():
                 print(f"\n[DEBUG Checkpoint] step={step}, save_every={save_every}, is_save_step={is_save_step}, is_main_process={is_main}")
 
             if is_main and is_save_step and step > 0:
-# Synchroniser tous les GPUs avant sauvegarde (évite corruption)
+                # Synchronize all GPUs before saving (prevents corruption)
                 accelerator.wait_for_everyone()
-                print(f"\n🔵 Tentative de sauvegarde checkpoint step {step}...")
+                print(f"\n🔵 Attempting to save checkpoint step {step}...")
                 try:
-# Utiliser keep_last_n pour rotation
+                    # Use keep_last_n for rotation
                     keep_last = cfg["train"].get("keep_last_checkpoints")
-                    save_checkpoint(model, optimizer, scheduler, out_dir, step, accelerator, keep_last_n=keep_last)
-                    print(f"✅ Checkpoint step {step} sauvegardé avec succès!")
+                    save_checkpoint(
+                        model,
+                        optimizer,
+                        scheduler,
+                        out_dir,
+                        step,
+                        accelerator,
+                        keep_last_n=keep_last,
+                        extra_state=build_extra_state(best_overall, best_loss_per_sequence),
+                    )
+                    print(f"✅ Checkpoint step {step} saved successfully!")
+                    checkpoint_dir = os.path.join(out_dir, f"ckpt_{step}")
+                    run_quick_generate(config_file_path, checkpoint_dir)
                 except Exception as e:
-                    print(f"❌ ERREUR lors de la sauvegarde checkpoint step {step}: {e}")
+                    print(f"❌ ERROR during checkpoint save step {step}: {e}")
                     import traceback
                     traceback.print_exc()
             
-            # Stop si max steps atteint
+            # === TRAINING TERMINATION CHECK ===
+            # Stop if max steps reached
             if step >= total_steps:
                 break
         
         if step >= total_steps:
             break
     
-    # Final checkpoint
-# Synchroniser avant checkpoint final aussi
+    # === FINAL CHECKPOINT ===
+    # Synchronize before final checkpoint as well
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
-        save_checkpoint(model, optimizer, scheduler, out_dir, step, accelerator)
+        save_checkpoint(
+            model,
+            optimizer,
+            scheduler,
+            out_dir,
+            step,
+            accelerator,
+            extra_state=build_extra_state(best_overall, best_loss_per_sequence),
+        )
+        checkpoint_dir = os.path.join(out_dir, f"ckpt_{step}")
+        run_quick_generate(config_file_path, checkpoint_dir)
         print("\n=== Training Complete ===")
         log_system_info("TRAINING COMPLETE")
 
@@ -1318,6 +1640,7 @@ def main():
             if system_monitor_thread is not None:
                 system_monitor_thread.join(timeout=5.0)
     
+    # === CLEANUP ===
     progress_bar.close()
 
     if cfg["log"].get("wandb", False):

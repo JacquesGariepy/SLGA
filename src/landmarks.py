@@ -2,8 +2,8 @@
 """
 Learnable Landmark Selection Module
 
-Implémente la sélection différentiable de positions importantes (landmarks)
-pour l'attention globale via Gumbel-Softmax ou top-K avec straight-through estimator.
+Implements differentiable selection of important positions (landmarks)
+for global attention via Gumbel-Softmax or top-K with straight-through estimator.
 """
 
 from __future__ import annotations
@@ -16,20 +16,20 @@ from typing import Tuple, Optional
 
 class LearnableLandmarkSelector(nn.Module):
     """
-    Sélectionne G landmarks de manière différentiable parmi L positions.
+    Selects G landmarks in a differentiable manner from L positions.
     
-    Utilise un scorer neural pour attribuer un score d'importance à chaque position,
-    puis sélectionne les top-K via:
-    - Mode training: Gumbel-Softmax relaxation pour différentiabilité
-    - Mode inference: Hard top-K déterministe
+    Uses a neural scorer to assign importance scores to each position,
+    then selects top-K via:
+    - Training mode: Gumbel-Softmax relaxation for differentiability
+    - Inference mode: Hard top-K deterministic selection
     
     Args:
-        embed_dim: Dimension des embeddings d'entrée
-        num_landmarks: Nombre de landmarks à sélectionner (G)
-        hidden_dim: Dimension de la couche cachée du scorer (default: embed_dim // 2)
-        temperature: Température Gumbel (plus bas = plus hard, default: 1.0)
-        temperature_decay: Facteur de décroissance de température (default: 0.999, 10× plus rapide)
-        min_temperature: Température minimale (default: 0.3, plus discriminatif)
+        embed_dim: Input embedding dimension
+        num_landmarks: Number of landmarks to select (G)
+        hidden_dim: Hidden dimension of scorer network (default: embed_dim // 2)
+        temperature: Gumbel temperature (lower = harder, default: 1.0)
+        temperature_decay: Temperature decay factor (default: 0.999, 10x faster)
+        min_temperature: Minimum temperature (default: 0.3, more discriminative)
     """
     
     def __init__(
@@ -38,8 +38,8 @@ class LearnableLandmarkSelector(nn.Module):
         num_landmarks: int,
         hidden_dim: Optional[int] = None,
         temperature: float = 1.0,
-        temperature_decay: float = 0.999,  # Optimisation #1: 10× plus rapide (0.9999 → 0.999)
-        min_temperature: float = 0.3,      # Optimisation #1: Plus discriminatif (0.5 → 0.3)
+        temperature_decay: float = 0.999,  # Optimization #1: 10x faster (0.9999 → 0.999)
+        min_temperature: float = 0.3,      # Optimization #1: More discriminative (0.5 → 0.3)
     ):
         super().__init__()
         
@@ -49,7 +49,7 @@ class LearnableLandmarkSelector(nn.Module):
         self.temperature_decay = temperature_decay
         self.min_temperature = min_temperature
         
-        # Scorer: embed -> hidden -> 1 (score d'importance)
+        # Scorer: embed -> hidden -> 1 (importance score)
         hidden = hidden_dim or (embed_dim // 2)
         self.scorer = nn.Sequential(
             nn.Linear(embed_dim, hidden),
@@ -58,11 +58,11 @@ class LearnableLandmarkSelector(nn.Module):
             nn.Linear(hidden, 1),
         )
         
-        # Compteur d'étapes pour décroissance température
+        # Step counter for temperature decay
         self.register_buffer("step_count", torch.tensor(0), persistent=False)
     
     def _get_temperature(self) -> float:
-        """Calcule température actuelle avec décroissance"""
+        """Compute current temperature with decay"""
         if self.training:
             temp = self.temperature * (self.temperature_decay ** self.step_count.item())
             return max(temp, self.min_temperature)
@@ -73,54 +73,54 @@ class LearnableLandmarkSelector(nn.Module):
         self, scores: torch.Tensor, k: int, temperature: float
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Approximation différentiable de top-K via Gumbel-Softmax.
+        Differentiable approximation of top-K via Gumbel-Softmax.
 
         Args:
-            scores: (B, L) scores d'importance
-            k: Nombre d'éléments à sélectionner
-            temperature: Température pour relaxation
+            scores: (B, L) importance scores
+            k: Number of elements to select
+            temperature: Temperature for relaxation
 
         Returns:
-            soft_selection: (B, L) poids continus (approx one-hot top-k)
-            hard_indices: (B, k) indices hard (pour gather)
+            soft_selection: (B, L) continuous weights (approx one-hot top-k)
+            hard_indices: (B, k) hard indices (for gather)
         """
         B, L = scores.shape
 
-        # ✅ FIX Bug #17: Générer bruit Gumbel en float32 pour éviter NaN en AMP
-        # Problème: En float16/bfloat16, torch.rand_like() peut produire exactement 0
+        # Fix Bug #17: Generate Gumbel noise in float32 to avoid NaN in AMP
+        # Problem: In float16/bfloat16, torch.rand_like() can produce exactly 0
         # → -log(-log(0)) = NaN
-        # Solution: Générer en float32, puis caster
+        # Solution: Generate in float32, then cast
         eps = 1e-10
         original_dtype = scores.dtype
 
-        # Générer bruit en float32 (stable)
+        # Generate noise in float32 (stable)
         uniform_noise = torch.rand(scores.shape, dtype=torch.float32, device=scores.device)
         gumbel_noise = -torch.log(-torch.log(uniform_noise + eps) + eps)
 
-        # Caster dans le dtype original
+        # Cast to original dtype
         gumbel_noise = gumbel_noise.to(original_dtype)
 
-        # 🔧 FIX: Vérifier NaN/Inf dans Gumbel noise (safety check)
+        # Fix: Check for NaN/Inf in Gumbel noise (safety check)
         if torch.isnan(gumbel_noise).any() or torch.isinf(gumbel_noise).any():
-            print(f"⚠️ NaN/Inf détecté dans Gumbel noise après fix, utilisation fallback")
+            print(f"⚠️ NaN/Inf detected in Gumbel noise after fix, using fallback")
             print(f"   Scores - min: {scores.min().item()}, max: {scores.max().item()}")
             gumbel_noise = torch.zeros_like(scores)
 
         perturbed_scores = (scores + gumbel_noise) / temperature
 
-        # Top-K hard (pour forward)
+        # Hard top-K (for forward)
         _, hard_indices = torch.topk(perturbed_scores, k=k, dim=-1)  # (B, k)
 
-        # Soft selection via softmax (pour backward)
-        # On utilise un "trick" pour concentrer la masse sur top-K
+        # Soft selection via softmax (for backward)
+        # Uses a "trick" to concentrate mass on top-K
         soft_scores = F.softmax(perturbed_scores, dim=-1)  # (B, L)
 
-        # 🔧 FIX: Vérifier NaN après softmax sur perturbed scores
+        # Fix: Check for NaN after softmax on perturbed scores
         if torch.isnan(soft_scores).any():
-            print(f"❌ NaN détecté dans soft_scores après Gumbel softmax!")
+            print(f"❌ NaN detected in soft_scores after Gumbel softmax!")
             print(f"   Perturbed scores - min: {perturbed_scores.min().item()}, max: {perturbed_scores.max().item()}")
             print(f"   Temperature: {temperature}")
-            # Fallback: distribution uniforme
+            # Fallback: uniform distribution
             soft_scores = torch.ones_like(soft_scores) / L
 
         return soft_scores, hard_indices
@@ -129,50 +129,50 @@ class LearnableLandmarkSelector(nn.Module):
         self, scores: torch.Tensor, k: int
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Top-K avec straight-through estimator AMÉLIORÉ.
+        Top-K with improved straight-through estimator.
 
-        🔧 FIX: Utilise une soft selection différentiable pour backward au lieu
-        de passer brutalement le gradient des scores bruts.
+        Fix: Uses differentiable soft selection for backward instead of
+        passing gradients from raw hard scores.
 
         Forward: Hard top-K (one-hot)
-        Backward: Gradient via sigmoid soft-thresholding (cohérent avec forward)
+        Backward: Gradient via sigmoid soft-thresholding (consistent with forward)
 
-        Avantages vs version précédente:
-        - Gradients plus stables (soft selection vs hard scores)
-        - Meilleure cohérence forward/backward
-        - Temperature contrôle la "sharpness" du soft selection
+        Advantages vs previous version:
+        - More stable gradients (soft selection vs hard scores)
+        - Better forward/backward consistency
+        - Temperature controls "sharpness" of soft selection
 
         Args:
-            scores: (B, L) scores d'importance bruts
-            k: Nombre d'éléments à sélectionner
+            scores: (B, L) raw importance scores
+            k: Number of elements to select
 
         Returns:
-            selection: (B, L) poids de sélection (forward=hard, backward=soft)
-            topk_indices: (B, k) indices hard des top-k
+            selection: (B, L) selection weights (forward=hard, backward=soft)
+            topk_indices: (B, k) hard indices of top-k
 
         Notes:
-            - Temperature=0.1 rend la soft selection proche de hard (mais différentiable)
-            - Le seuil est basé sur le k-ième score (adaptatif automatiquement)
+            - Temperature=0.1 makes soft selection close to hard (but differentiable)
+            - Threshold based on k-th score (adaptive automatically)
         """
         B, L = scores.shape
 
         # Forward: Hard top-K
         topk_vals, topk_indices = torch.topk(scores, k=k, dim=-1)  # (B, k)
 
-        # Créer one-hot encodings des sélections (forward)
+        # Create one-hot encodings of selections (forward)
         selection_onehot = torch.zeros_like(scores)  # (B, L)
         selection_onehot.scatter_(1, topk_indices, 1.0)
 
-        # ✅ AMÉLIORATION: Soft selection pour backward cohérent
-        # Utilise sigmoid soft-thresholding basé sur k-ième valeur
-        threshold = topk_vals[:, -1:].detach()  # (B, 1) - k-ième score (seuil adaptatif)
-        temp = 0.1  # Temperature: plus bas = plus proche de hard selection
+        # Improvement: Soft selection for consistent backward
+        # Uses sigmoid soft-thresholding based on k-th value
+        threshold = topk_vals[:, -1:].detach()  # (B, 1) - k-th score (adaptive threshold)
+        temp = 0.1  # Temperature: lower = closer to hard selection
 
-        # Soft selection via sigmoid: positions > threshold → poids ~1, sinon ~0
+        # Soft selection via sigmoid: positions > threshold → weight ~1, else ~0
         selection_soft = torch.sigmoid((scores - threshold) / temp)  # (B, L)
 
         # Straight-through: forward=hard (one-hot), backward=soft (sigmoid)
-        # Cette formulation garantit:
+        # This ensures:
         #   - y = selection_onehot (forward)
         #   - dy/dx = d(selection_soft)/dx (backward)
         selection = selection_onehot + selection_soft - selection_soft.detach()
@@ -183,89 +183,89 @@ class LearnableLandmarkSelector(nn.Module):
         self, x: torch.Tensor, use_gumbel: bool = False
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Sélectionne landmarks de manière différentiable.
+        Selects landmarks in a differentiable manner.
 
         Args:
-            x: (B, L, D) séquence d'entrée
-            use_gumbel: Si True, utilise Gumbel-Softmax (sinon straight-through)
+            x: (B, L, D) input sequence
+            use_gumbel: If True, uses Gumbel-Softmax (else straight-through)
 
         Returns:
-            landmark_indices: (B, G) indices des landmarks sélectionnés
-            landmark_states: (B, G, D) états correspondants (gathered)
-            selection_scores: (B, L) scores de sélection pour loss auxiliaire
+            landmark_indices: (B, G) indices of selected landmarks
+            landmark_states: (B, G, D) corresponding states (gathered)
+            selection_scores: (B, L) selection scores for auxiliary loss
 
         Notes:
-            💡 RECOMMANDATION: use_gumbel=True est préférable pour l'entraînement!
+            💡 RECOMMENDATION: use_gumbel=True is preferable for training!
 
-            Comparaison des méthodes:
+            Method comparison:
             ┌─────────────────┬──────────────────┬────────────────┬──────────────┐
-            │ Méthode         │ Gradients        │ Convergence    │ Stabilité    │
+            │ Method          │ Gradients        │ Convergence    │ Stability    │
             ├─────────────────┼──────────────────┼────────────────┼──────────────┤
-            │ Gumbel-Softmax  │ Smooth & continu │ Plus stable    │ ⭐⭐⭐⭐⭐   │
-            │ (use_gumbel=T)  │ Temperature decay│ Converge mieux │              │
+            │ Gumbel-Softmax  │ Smooth & continu │ More stable    │ ⭐⭐⭐⭐⭐ │
+            │ (use_gumbel=T)  │ Temperature decay│ Converge better│              │
             ├─────────────────┼──────────────────┼────────────────┼──────────────┤
-            │ Straight-through│ Approximatif     │ Plus rapide    │ ⭐⭐⭐       │
-            │ (use_gumbel=F)  │ Sigmoid-based    │ Moins stable   │              │
+            │ Straight-through│ Approximative    │ Faster         │ ⭐⭐⭐      │
+            │ (use_gumbel=F)  │ Sigmoid-based    │ Less stable    │              │
             └─────────────────┴──────────────────┴────────────────┴──────────────┘
 
-            Pourquoi Gumbel est meilleur:
-            1. ✅ Gradients théoriquement fondés (relaxation continue de argmax)
-            2. ✅ Temperature annealing → converge vers hard selection progressivement
-            3. ✅ Utilisé dans Sparse Transformer, DALL-E, et autres modèles SOTA
+            Why Gumbel is better:
+            1. Theoretically grounded gradients (continuous relaxation of argmax)
+            2. Temperature annealing → converges to hard selection progressively
+            3. Used in Sparse Transformer, DALL-E, and other SOTA models
 
-            Quand utiliser straight-through:
-            - Prototypage rapide (pas besoin de tuner temperature)
-            - Ressources limitées (léger gain de vitesse ~5-10%)
-            - Fine-tuning court où gradients approximatifs suffisent
+            When to use straight-through:
+            - Quick prototyping (no need to tune temperature)
+            - Limited resources (slight speed gain ~5-10%)
+            - Short fine-tuning where approximate gradients suffice
 
-            ⚠️ ATTENTION: Straight-through peut causer gradients instables en début
-            d'entraînement car le seuil adaptatif bouge beaucoup quand scores non-calibrés.
-            → Utiliser Gumbel pour entraînement from-scratch, straight-through pour fine-tuning.
+            WARNING: Straight-through can cause unstable gradients early in
+            training because the adaptive threshold moves a lot when scores are uncalibrated.
+            → Use Gumbel for from-scratch training, straight-through for fine-tuning.
         """
         B, L, D = x.shape
 
-        # Scorer chaque position
+        # Score each position
         scores = self.scorer(x).squeeze(-1)  # (B, L)
 
-        # 🔧 FIX: Protection NaN - clamp scores avant softmax/gumbel
-        # Évite overflow dans exp() si scores extrêmes
+        # Fix: NaN protection - clamp scores before softmax/gumbel
+        # Avoids overflow in exp() if extreme scores
         scores = torch.clamp(scores, min=-20, max=20)
 
-        # Sélection différentiable
+        # Differentiable selection
         k = min(self.num_landmarks, L)
         
         if self.training:
             if use_gumbel:
-                # Mode Gumbel (plus smooth mais plus lent)
+                # Gumbel mode (smoother but slower)
                 temp = self._get_temperature()
                 selection_soft, landmark_indices = self._gumbel_topk(scores, k, temp)
-                # Mettre à jour compteur température
+                # Update temperature counter
                 self.step_count += 1
             else:
-                # Mode straight-through (plus efficace)
+                # Straight-through mode (more efficient)
                 selection_soft, landmark_indices = self._straight_through_topk(scores, k)
         else:
-            # Inference: hard top-K déterministe
+            # Inference: hard top-K deterministic
             _, landmark_indices = torch.topk(scores, k=k, dim=-1)
             selection_soft = None
         
-        # Gather les états correspondants
+        # Gather corresponding states
         # x: (B, L, D), indices: (B, G) -> expand to (B, G, D)
-        # ✅ PROTECTION: Clamp indices avant gather pour éviter index out-of-bounds
+        # Protection: Clamp indices before gather to avoid index out-of-bounds
         landmark_indices_safe = torch.clamp(landmark_indices, 0, L - 1)
         landmark_indices_exp = landmark_indices_safe.unsqueeze(-1).expand(B, k, D)
         landmark_states = torch.gather(x, dim=1, index=landmark_indices_exp)  # (B, G, D)
 
-        # Scores de sélection (pour loss auxiliaire de diversité)
-        # Normaliser avec softmax pour interprétabilité
+        # Selection scores (for auxiliary diversity loss)
+        # Normalize with softmax for interpretability
         selection_scores = F.softmax(scores, dim=-1)  # (B, L)
 
-        # 🔧 FIX: Vérifier NaN après softmax
+        # Fix: Check for NaN after softmax
         if torch.isnan(selection_scores).any():
-            print(f"❌ NaN détecté dans selection_scores après softmax!")
-            print(f"   Scores avant softmax - min: {scores.min().item()}, max: {scores.max().item()}")
-            print(f"   Clamp appliqué ([-20, 20]) mais NaN persiste - possible overflow")
-            # Fallback: distribution uniforme
+            print(f"❌ NaN detected in selection_scores after softmax!")
+            print(f"   Scores before softmax - min: {scores.min().item()}, max: {scores.max().item()}")
+            print(f"   Clamp applied ([-20, 20]) but NaN persists - possible overflow")
+            # Fallback: uniform distribution
             selection_scores = torch.ones_like(selection_scores) / selection_scores.size(-1)
 
         return landmark_indices, landmark_states, selection_scores
@@ -273,11 +273,11 @@ class LearnableLandmarkSelector(nn.Module):
 
 class PositionalLandmarkSelector(nn.Module):
     """
-    Sélecteur de landmarks basé sur patterns positionnels appris.
+    Landmark selector based on learned positional patterns.
     
-    Au lieu de scorer chaque token individuellement, ce module apprend
-    des patterns de positions importantes (e.g., début de paragraphe,
-    tous les N tokens, etc.)
+    Instead of scoring each token individually, this module learns
+    patterns of important positions (e.g., paragraph starts,
+    every N tokens, etc.)
     """
     
     def __init__(
@@ -291,16 +291,16 @@ class PositionalLandmarkSelector(nn.Module):
         self.max_seq_len = max_seq_len
         self.num_landmarks = num_landmarks
         
-        # Embeddings positionnels apprenables
+        # Learnable positional embeddings
         self.pos_embeddings = nn.Parameter(torch.randn(max_seq_len, embed_dim))
         
-        # Projecteur vers scores
+        # Projector to scores
         self.scorer = nn.Linear(embed_dim, 1)
     
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
-            x: (B, L, D) - l'embed_dim de x peut différer de self pos_embeddings
+            x: (B, L, D) - embed_dim of x may differ from self pos_embeddings
         
         Returns:
             landmark_indices: (B, G)
@@ -309,10 +309,10 @@ class PositionalLandmarkSelector(nn.Module):
         """
         B, L, D = x.shape
         
-        # Prendre les pos embeddings pour cette longueur
+        # Take pos embeddings for this length
         pos_emb = self.pos_embeddings[:L]  # (L, embed_dim_pos)
         
-        # Scorer positions
+        # Score positions
         scores = self.scorer(pos_emb).squeeze(-1)  # (L,)
         scores = scores.unsqueeze(0).expand(B, L)  # (B, L)
         
@@ -321,7 +321,7 @@ class PositionalLandmarkSelector(nn.Module):
         _, landmark_indices = torch.topk(scores, k=k, dim=-1)  # (B, k)
         
         # Gather states
-        # ✅ PROTECTION: Clamp indices avant gather pour éviter index out-of-bounds
+        # Protection: Clamp indices before gather to avoid index out-of-bounds
         landmark_indices_safe = torch.clamp(landmark_indices, 0, L - 1)
         landmark_indices_exp = landmark_indices_safe.unsqueeze(-1).expand(B, k, D)
         landmark_states = torch.gather(x, dim=1, index=landmark_indices_exp)
@@ -333,9 +333,9 @@ class PositionalLandmarkSelector(nn.Module):
 
 class HybridLandmarkSelector(nn.Module):
     """
-    Combine sélection apprise (content-based) et positionnelle.
+    Combine learned (content-based) and positional selection.
     
-    Utilise un gating pour décider dynamiquement de la combinaison.
+    Uses gating to dynamically decide the combination.
     """
     
     def __init__(
@@ -350,29 +350,29 @@ class HybridLandmarkSelector(nn.Module):
         self.content_selector = LearnableLandmarkSelector(embed_dim, num_landmarks)
         self.position_selector = PositionalLandmarkSelector(max_seq_len, num_landmarks, embed_dim)
 
-        # Gate pour combiner les deux
+        # Gate to combine the two
         self.gate = nn.Linear(embed_dim, 1)
     
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         B, L, D = x.shape
         
-        # Sélections des deux modules
+        # Selections from both modules
         idx_content, states_content, scores_content = self.content_selector(x)
         idx_position, states_position, scores_position = self.position_selector(x)
         
-        # Gate basé sur moyenne globale de la séquence
+        # Gate based on global average of the sequence
         x_pooled = x.mean(dim=1)  # (B, D)
         gate_weight = torch.sigmoid(self.gate(x_pooled))  # (B, 1)
         
-        # Combiner scores
+        # Combine scores
         scores_combined = gate_weight * scores_content + (1 - gate_weight) * scores_position
         
-        # Re-sélectionner top-K selon scores combinés
+        # Re-select top-K according to combined scores
         k = min(self.num_landmarks, L)
         _, landmark_indices = torch.topk(scores_combined, k=k, dim=-1)
         
         # Gather
-        # ✅ PROTECTION: Clamp indices avant gather pour éviter index out-of-bounds
+        # Protection: Clamp indices before gather to avoid index out-of-bounds
         landmark_indices_safe = torch.clamp(landmark_indices, 0, L - 1)
         landmark_indices_exp = landmark_indices_safe.unsqueeze(-1).expand(B, k, D)
         landmark_states = torch.gather(x, dim=1, index=landmark_indices_exp)
@@ -387,90 +387,90 @@ def landmark_spacing_loss(
     selection_scores: Optional[torch.Tensor] = None
 ) -> torch.Tensor:
     """
-    Optimisation #2: Pénalise gaps non-uniformes entre landmarks.
+    Optimization #2: Penalizes non-uniform gaps between landmarks.
 
-    🔧 FIX: Version différentiable qui utilise selection_scores pour gradients!
+    Fix: Differentiable version that uses selection_scores for gradients!
 
-    Encourage un espacement uniforme des landmarks dans la séquence pour maximiser
-    la couverture spatiale et éviter le clustering de landmarks proches.
+    Encourages uniform spacing of landmarks in the sequence to maximize
+    spatial coverage and avoid clustering of nearby landmarks.
 
     Args:
-        landmark_indices: (B, G) indices des landmarks sélectionnés (pour calcul fallback)
-        seq_len: Longueur de séquence L (nombre total de positions)
-        lambda_reg: Poids de régularisation (default: 0.01)
-        selection_scores: (B, L) scores de sélection différentiables (REQUIS pour gradients!)
+        landmark_indices: (B, G) indices of selected landmarks (for fallback calculation)
+        seq_len: Sequence length L (total number of positions)
+        lambda_reg: Regularization weight (default: 0.01)
+        selection_scores: (B, L) differentiable selection scores (REQUIRED for gradients!)
 
     Returns:
-        loss: Scalaire encourageant espacement uniforme des landmarks
+        loss: Scalar encouraging uniform spacing of landmarks
 
     Notes:
-        - 🚨 IMPORTANT: Passer selection_scores pour que les gradients flow vers le scorer!
-        - Si selection_scores=None, utilise une version non-différentiable (fallback)
-        - Complexité: O(L) avec scores, O(G log G) sans scores
+        - IMPORTANT: Pass selection_scores so gradients flow to the scorer!
+        - If selection_scores=None, uses non-differentiable version (fallback)
+        - Complexity: O(L) with scores, O(G log G) without scores
     """
     B, G = landmark_indices.shape
 
     if selection_scores is not None:
-        # 🔧 MODE DIFFÉRENTIABLE: Utilise les scores (qui ont des gradients!)
-        # Calcule la "position moyenne pondérée" des scores élevés
-        # et vérifie qu'ils couvrent uniformément [0, L-1]
+        # Differentiable mode: Uses scores (which have gradients!)
+        # Calculates "weighted average position" of high scores
+        # and checks that they cover [0, L-1] uniformly
 
-        # Positions dans la séquence
+        # Positions in the sequence
         positions = torch.arange(seq_len, device=selection_scores.device, dtype=selection_scores.dtype)  # (L,)
 
-        # Normaliser scores pour avoir une distribution
-        # On utilise les top-K scores seulement (masquer les autres)
-        # Créer un masque pour les positions sélectionnées
+        # Normalize scores to have a distribution
+        # Use only top-K scores (mask others)
+        # Create mask for selected positions
         B_idx = torch.arange(B, device=landmark_indices.device).unsqueeze(1).expand(B, G)
         mask = torch.zeros(B, seq_len, device=selection_scores.device, dtype=selection_scores.dtype)
-        mask.scatter_(1, landmark_indices, 1.0)  # (B, L) avec 1.0 aux positions des landmarks
+        mask.scatter_(1, landmark_indices, 1.0)  # (B, L) with 1.0 at landmark positions
 
-        # Scores masqués et normalisés
+        # Masked and normalized scores
         masked_scores = selection_scores * mask  # (B, L)
         normalized_scores = masked_scores / (masked_scores.sum(dim=1, keepdim=True) + 1e-8)  # (B, L)
 
-        # Calculer position moyenne pondérée pour chaque "segment" de la séquence
-        # Diviser [0, L-1] en G segments et vérifier que chaque segment a du poids
+        # Calculate weighted average position for each "segment" of the sequence
+        # Divide [0, L-1] into G segments and check each has weight
         segment_size = seq_len / G
         segment_centers = torch.arange(G, device=selection_scores.device, dtype=selection_scores.dtype) * segment_size + segment_size / 2  # (G,)
 
-        # ⚡ VERSION VECTORISÉE: Calculer poids par segment (GPU-optimisé)
-        # Créer indices de segments pour chaque position [0, seq_len-1] → [0, G-1]
+        # Vectorized version: Calculate weight per segment (GPU-optimized)
+        # Create segment indices for each position [0, seq_len-1] → [0, G-1]
         segment_indices = (torch.arange(seq_len, device=selection_scores.device).float() / segment_size).long()
         segment_indices = segment_indices.clamp(max=G-1)  # (L,) - handle rounding
 
-        # Expand pour batch: (B, L)
+        # Expand for batch: (B, L)
         segment_indices_exp = segment_indices.unsqueeze(0).expand(B, seq_len)
 
-        # Scatter-add pour accumuler poids par segment (entièrement différentiable)
+        # Scatter-add to accumulate weight per segment (fully differentiable)
         segment_weights = torch.zeros(B, G, device=selection_scores.device, dtype=selection_scores.dtype)
         segment_weights.scatter_add_(1, segment_indices_exp, normalized_scores)  # (B, G)
 
-        # Loss: Pénaliser écart par rapport à poids uniforme (1/G pour chaque segment)
+        # Loss: Penalize deviation from uniform weight (1/G for each segment)
         ideal_weight = 1.0 / G
         loss = lambda_reg * ((segment_weights - ideal_weight) ** 2).mean()
 
     else:
-        # ⚠️ FALLBACK NON-DIFFÉRENTIABLE (ancien comportement)
+        # Fallback non-differentiable (old behavior)
 
-        # ✅ FIX Bug #16: Guard contre G <= 1 (pas de gaps possibles)
-        # Problème: Si G <= 1, gaps est vide → .mean() = NaN
-        # Se produit: curriculum court, séquences courtes, G=1 configs
+        # Fix Bug #16: Guard against G <= 1 (no gaps possible)
+        # Problem: If G <= 1, gaps is empty → .mean() = NaN
+        # Occurs: Short curriculum, short sequences, G=1 configs
         if G < 2:
-            # Pas assez de landmarks pour calculer spacing
-            # Retourner 0 (pas de pénalité)
+            # Not enough landmarks to calculate spacing
+            # Return 0 (no penalty)
             return torch.tensor(0.0, device=landmark_indices.device, dtype=torch.float32)
 
-        # Trier indices pour calculer gaps entre landmarks consécutifs
+        # Sort indices to calculate gaps between consecutive landmarks
         sorted_idx, _ = torch.sort(landmark_indices, dim=-1)  # (B, G)
 
-        # Calculer gaps (distances) entre landmarks adjacents
+        # Calculate gaps (distances) between adjacent landmarks
         gaps = sorted_idx[:, 1:] - sorted_idx[:, :-1]  # (B, G-1)
 
-        # Gap idéal pour espacement uniforme = L / G
+        # Ideal gap for uniform spacing = L / G
         ideal_gap = seq_len / G
 
-        # MSE loss sur gaps: pénalise déviations de l'espacement uniforme
+        # MSE loss on gaps: penalizes deviations from uniform spacing
         loss = lambda_reg * ((gaps - ideal_gap) ** 2).mean()
 
     return loss
@@ -480,32 +480,32 @@ def landmark_diversity_loss(
     selection_scores: torch.Tensor, lambda_reg: float = 0.01
 ) -> torch.Tensor:
     """
-    [DEPRECATED] Loss auxiliaire basée sur l'entropie (remplacée par spacing_loss).
+    [DEPRECATED] Auxiliary loss based on entropy (replaced by spacing_loss).
 
-    Maximise l'entropie de la distribution de sélection pour encourager diversité.
+    Maximizes entropy of the selection distribution to encourage diversity.
 
-    ⚠️ Limitation: Pousse vers distribution uniforme sur L positions au lieu de
-    pénaliser directement le clustering des G landmarks sélectionnés.
+    Limitation: Pushes towards uniform distribution over L positions instead of
+    directly penalizing clustering of the G selected landmarks.
 
-    → Utiliser landmark_spacing_loss() à la place pour de meilleurs résultats.
+    → Use landmark_spacing_loss() instead for better results.
 
     Args:
-        selection_scores: (B, L) probabilités de sélection normalisées
-        lambda_reg: Poids de régularisation
+        selection_scores: (B, L) normalized selection probabilities
+        lambda_reg: Regularization weight
 
     Returns:
-        loss: Scalaire, à minimiser
+        loss: Scalar, to minimize
     """
     B, L = selection_scores.shape
 
-    # Entropie de la distribution: H = -sum(p * log(p))
+    # Entropy of the distribution: H = -sum(p * log(p))
     entropy = -(selection_scores * torch.log(selection_scores + 1e-10)).sum(dim=-1)  # (B,)
 
-    # Normaliser par entropie max (log(L))
+    # Normalize by max entropy (log(L))
     max_entropy = math.log(L)
-    normalized_entropy = entropy / max_entropy  # (B,) dans [0, 1]
+    normalized_entropy = entropy / max_entropy  # (B,) in [0, 1]
 
-    # Pénaliser faible entropie (on veut haute entropie = diversité)
+    # Penalize low entropy (want high entropy = diversity)
     loss = lambda_reg * (1 - normalized_entropy).mean()
 
     return loss
@@ -517,74 +517,74 @@ def landmark_sparsity_loss(
     lambda_reg: float = 0.001
 ) -> torch.Tensor:
     """
-    ✅ VERSION CORRECTE v4: Mesure la concentration via proportion de "masse" dans top-G.
+    Correct version v4: Measures concentration via proportion of "mass" in top-G.
 
-    Pénalise si les scores sont trop dispersés, c'est-à-dire si la "masse"
-    (somme des scores positifs) n'est PAS suffisamment concentrée dans les top-G.
+    Penalizes if scores are too dispersed, i.e., if the "mass"
+    (sum of positive scores) is NOT sufficiently concentrated in the top-G.
 
-    Approche:
-        1. Normaliser scores via softmax → probabilités
-        2. Calculer proportion de masse dans top-G
-        3. Target: au moins 80% de la masse devrait être dans top-G
-        4. Pénaliser si proportion < target
+    Approach:
+        1. Normalize scores via softmax → probabilities
+        2. Calculate proportion of mass in top-G
+        3. Target: at least 80% of mass should be in top-G
+        4. Penalize if proportion < target
 
-    Problème résolu:
-        Versions précédentes: Gap ou count donnaient loss=0 toujours
+    Problem solved:
+        Previous versions: Gap or count gave loss=0 always
 
-        Version v4: Proportion de masse
-        → Si bien concentré: top-G contient 90%+ de masse → loss=0
-        → Si dispersé: top-G contient 60% de masse → loss>0
-        → Mesure directe et intuitive de la concentration
+        Version v4: Proportion of mass
+        → If well concentrated: top-G contains 90%+ mass → loss=0
+        → If dispersed: top-G contains 60% mass → loss>0
+        → Direct and intuitive measure of concentration
 
     Args:
-        selection_scores: (B, L) scores bruts de sélection (non normalisés)
-        num_landmarks: Nombre de landmarks G
-        lambda_reg: Poids de régularisation (default: 0.001)
+        selection_scores: (B, L) raw selection scores (unnormalized)
+        num_landmarks: Number of landmarks G
+        lambda_reg: Regularization weight (default: 0.001)
 
     Returns:
-        loss: Scalaire, à minimiser (0 si bonne concentration)
+        loss: Scalar, to minimize (0 if good concentration)
 
     Example:
-        Pour G=48, L=384:
-        Cas concentré:
-          top_48 contient 95% masse → mass_ratio=0.95 → loss=0
-        Cas dispersé:
-          top_48 contient 30% masse → mass_ratio=0.30 → loss>0
+        For G=48, L=384:
+        Concentrated case:
+          top_48 contains 95% mass → mass_ratio=0.95 → loss=0
+        Dispersed case:
+          top_48 contains 30% mass → mass_ratio=0.30 → loss>0
 
     Notes:
-        - Softmax normalise et rend comparables tous scores
-        - Température=1.0: pas de sharpening, mesure naturelle
-        - Différentiable: gradients fluent via softmax et indexing
-        - Target adaptatif: 60% + (G/L)*40% pour tenir compte du ratio
+        - Softmax normalizes and makes all scores comparable
+        - Temperature=1.0: no sharpening, natural distribution
+        - Differentiable: gradients flow via softmax and indexing
+        - Adaptive target: 60% + (G/L)*40% to account for ratio
     """
     B, L = selection_scores.shape
 
-    # 1. Normaliser via softmax pour obtenir "probabilités" / masse relative
-    # Température 1.0: pas de sharpening, distribution naturelle
-    probs = F.softmax(selection_scores, dim=-1)  # (B, L), sum=1 par batch
+    # 1. Normalize via softmax to get "probabilities" / relative mass
+    # Temperature 1.0: no sharpening, natural distribution
+    probs = F.softmax(selection_scores, dim=-1)  # (B, L), sum=1 per batch
 
-    # 2. Trouver top-G indices
+    # 2. Find top-G indices
     _, top_g_indices = torch.topk(selection_scores, k=num_landmarks, dim=-1)  # (B, G)
 
-    # 3. Calculer la masse totale dans top-G
-    # Gather les probabilités des top-G positions
+    # 3. Calculate total mass in top-G
+    # Gather probabilities of top-G positions
     top_g_probs = torch.gather(probs, dim=1, index=top_g_indices)  # (B, G)
-    mass_in_top_g = top_g_probs.sum(dim=-1).mean()  # Scalaire, moyenne sur batch
+    mass_in_top_g = top_g_probs.sum(dim=-1).mean()  # Scalar, average over batch
 
-    # 4. Target adaptatif: on attend qu'une majorité de la masse soit dans top-G
-    # Idéalement, si G=48 et L=384 (12.5%), on voudrait au moins 60-80% de masse dans top-G
-    # Formule: base 60% + bonus selon ratio G/L
+    # 4. Adaptive target: expect majority of mass in top-G
+    # Ideally, if G=48 and L=384 (12.5%), want at least 60-80% mass in top-G
+    # Formula: base 60% + bonus based on G/L ratio
     ideal_ratio = num_landmarks / L  # Ex: 48/384 = 0.125
     target_mass = 0.60 + ideal_ratio * 0.40  # Ex: 0.60 + 0.125*0.40 = 0.65
 
-    # 5. Pénaliser si masse insuffisante dans top-G
-    # Plus la masse est dispersée, plus la loss est élevée
+    # 5. Penalize if insufficient mass in top-G
+    # More dispersed mass = higher loss
     loss = lambda_reg * F.relu(target_mass - mass_in_top_g)
 
-    # 📊 Retourner aussi mass_in_top_g pour logging (optionnel)
-    # Permet de monitorer l'évolution même si loss constante au début
+    # Return mass_in_top_g for logging (optional)
+    # Allows monitoring evolution even if loss constant early
     # Usage: loss, mass = landmark_sparsity_loss(..., return_mass=True)
-    # Note: Pour compatibilité backward, on retourne juste loss par défaut
-    # Le caller peut extraire mass_in_top_g en réexécutant le calcul si besoin
+    # Note: For backward compatibility, return just loss by default
+    # Caller can extract mass_in_top_g by re-running calculation if needed
 
     return loss
