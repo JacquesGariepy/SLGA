@@ -17,11 +17,7 @@
 - **Local Attention**: Sliding window O(L·W) with efficient causal masking
 - **Global Attention**: Selective caching O(L·G) with top-K landmarks
 - **Learned Fusion**: Dynamic local/global gating for context adaptation
-- **Landmark Selection Strategies**:
-  - **Learned** (content-based): Differentiable selector with Gumbel-Softmax
-  - **Positional** (position-based): Learned position embeddings + MLP scoring
-  - **Hybrid** (adaptive): Dynamic gating between content and position (gate ∈ [0,1])
-  - **Heuristic** (fixed): Uniform, first-K, or stride strategies
+- **Differentiable Landmarks**: Gumbel-Softmax selection mechanism
 - **Complexity**: O(L·W + L·G) vs O(L²) standard attention
 
 ### Optimizations
@@ -54,8 +50,8 @@
 ### Basic Installation
 
 ```bash
-git clone https://github.com/JacquesGariepy/slga.git
-cd slga
+git clone https://github.com/yourusername/slga-plus.git
+cd slga-plus
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
@@ -157,11 +153,11 @@ logits = model(input_ids)  # Shape: [batch, seq_len, vocab_size]
 
 ```python
 from src.training.trainers.slga_trainer import SLGATrainer
-from src.data.loaders.text_dataset import TextDatasetLoader
+from src.data.loaders.text_loader import TextDataLoader
 from src.training.optimizers.optimizer_factory import OptimizerFactory
 
 # Setup data
-data_loader = TextDatasetLoader(
+data_loader = TextDataLoader(
     dataset_name="wikitext",
     split="train",
     batch_size=4,
@@ -205,36 +201,17 @@ print(output)
 ### Custom Landmark Selection
 
 ```python
-from src.core.landmarks.learned import (
-    LearnedLandmarkSelector,
-    PositionalLandmarkSelector,
-    HybridLandmarkSelector
-)
+from src.core.landmarks.learned import LearnedLandmarkSelector
 from src.core.landmarks.heuristic import HeuristicLandmarkSelector
 
-# Learned landmarks (content-based, differentiable)
+# Learned landmarks (differentiable)
 learned_selector = LearnedLandmarkSelector(
     d_model=512,
     num_landmarks=64,
     gumbel_temperature=1.0
 )
 
-# Positional landmarks (position-based, differentiable)
-positional_selector = PositionalLandmarkSelector(
-    max_seq_len=2048,
-    num_landmarks=64,
-    embed_dim=512
-)
-
-# Hybrid landmarks (content + position, adaptive gating)
-hybrid_selector = HybridLandmarkSelector(
-    d_model=512,
-    num_landmarks=64,
-    max_seq_len=2048,
-    gumbel_temperature=1.0
-)
-
-# Heuristic landmarks (fixed, non-learnable)
+# Heuristic landmarks (fixed)
 heuristic_selector = HeuristicLandmarkSelector(
     strategy="uniform",  # or "first", "stride"
     num_landmarks=64
@@ -245,7 +222,7 @@ attention = SLGAAttention(
     d_model=512,
     num_heads=8,
     local_window_size=256,
-    landmark_selector=hybrid_selector  # or learned/positional/heuristic
+    landmark_selector=learned_selector  # or heuristic_selector
 )
 ```
 
@@ -371,329 +348,42 @@ mypy src/                       # Type checking
 ## 📁 Project Structure
 
 ```
-slga/
-├── src/                                # Source code
-│   ├── __init__.py                    # Main package (legacy-compatible exports)
-│   │
-│   ├── domain/                        # 🏛️ DOMAIN LAYER (Protocols & Abstractions)
-│   │   ├── __init__.py
-│   │   ├── entities/                  # Entity protocols
-│   │   │   ├── __init__.py
-│   │   │   └── transformer_protocol.py
-│   │   ├── services/                  # Service protocols
-│   │   │   ├── __init__.py
-│   │   │   ├── attention_protocol.py
-│   │   │   └── landmark_protocol.py
-│   │   ├── repositories/              # Repository protocols
-│   │   │   ├── __init__.py
-│   │   │   └── data_repository.py
-│   │   └── value_objects/             # Value objects
-│   │       ├── __init__.py
-│   │       └── config.py
-│   │
-│   ├── core/                          # 🔧 CORE LAYER (Business Logic)
-│   │   ├── __init__.py
-│   │   ├── constants.py
-│   │   ├── attention/                 # Attention mechanisms
-│   │   │   ├── __init__.py
-│   │   │   ├── base.py               # Base attention interface
-│   │   │   ├── slga.py               # SLGA attention (main)
-│   │   │   ├── local.py              # Local windowed attention
-│   │   │   └── global_.py            # Global landmark attention
-│   │   ├── landmarks/                 # Landmark selection strategies
-│   │   │   ├── __init__.py
-│   │   │   ├── base.py               # Base selector protocol
-│   │   │   ├── learned.py            # Learned/differentiable selector
-│   │   │   ├── heuristic.py          # Fixed heuristic selector
-│   │   │   ├── gumbel.py             # Gumbel-Softmax mechanisms
-│   │   │   ├── factory.py            # Landmark factory
-│   │   │   └── curriculum.py         # Curriculum learning
-│   │   └── layers/                    # Neural network layers
-│   │       ├── __init__.py
-│   │       ├── embedding.py          # Token + positional embeddings
-│   │       ├── feedforward.py        # Feed-forward networks
-│   │       └── transformer_block.py  # Complete transformer block
-│   │
-│   ├── models/                        # 🏗️ MODELS LAYER (Orchestration)
-│   │   ├── __init__.py
-│   │   ├── config.py                 # ModelConfig, PRESET_CONFIGS
-│   │   ├── slga_model.py             # SLGATransformer (main model)
-│   │   ├── generation.py             # TextGenerator, GenerationState
-│   │   └── factory.py                # ModelFactory
-│   │
-│   ├── data/                          # 📊 DATA INFRASTRUCTURE
-│   │   ├── __init__.py
-│   │   ├── factory.py                # DataLoaderFactory, TokenizerFactory
-│   │   ├── loaders/                  # Dataset loaders
-│   │   │   ├── text_dataset.py      # TextDatasetLoader (main)
-│   │   │   └── wiki_loader.py       # WikipediaDatasetLoader
-│   │   ├── processors/               # Text processing
-│   │   │   ├── text_processor.py    # TextProcessor
-│   │   │   ├── cleaner.py           # DataCleaner, CleanedDataset
-│   │   │   └── dataset_cleaner.py   # Dataset cleaning utilities
-│   │   ├── tokenizers/               # Tokenizer wrappers
-│   │   │   └── tokenizer_wrapper.py # TokenizerWrapper (HF integration)
-│   │   └── collators/                # Data collation
-│   │       └── language_modeling_collator.py  # CollatorLocal, CollatorLocalGlobal
-│   │
-│   ├── training/                      # 🎓 TRAINING INFRASTRUCTURE
-│   │   ├── __init__.py
-│   │   ├── trainers/                 # Trainer implementations
-│   │   │   ├── __init__.py
-│   │   │   ├── base_trainer.py      # Base trainer protocol
-│   │   │   └── slga_trainer.py      # SLGATrainer (main)
-│   │   ├── callbacks/                # Training callbacks
-│   │   │   ├── __init__.py
-│   │   │   ├── checkpoint_callback.py
-│   │   │   ├── metrics_callback.py
-│   │   │   └── display_callback.py
-│   │   ├── optimizers/               # Optimizer factories
-│   │   │   ├── __init__.py
-│   │   │   └── optimizer_factory.py  # OptimizerFactory
-│   │   ├── schedulers/               # Learning rate schedulers
-│   │   │   ├── __init__.py
-│   │   │   └── warmup_cosine.py     # WarmupCosineScheduler
-│   │   ├── data_utils.py             # Training data utilities
-│   │   └── system_monitor.py         # System resource monitoring
-│   │
-│   ├── generation/                    # ✨ TEXT GENERATION
-│   │   ├── __init__.py
-│   │   ├── config.py                 # Generation configuration
-│   │   ├── generator.py              # Main text generator
-│   │   ├── sampling.py               # Sampling strategies (top-k, top-p, temperature)
-│   │   ├── penalties.py              # Repetition penalties
-│   │   ├── stopping.py               # Stopping criteria
-│   │   └── checkpoint.py             # Checkpoint loading utilities
-│   │
-│   ├── monitoring/                    # 📊 OBSERVABILITY
-│   │   ├── __init__.py
-│   │   ├── metrics.py                # Training metrics collection
-│   │   ├── live_metrics.py           # Live metric tracking
-│   │   └── realtime_display.py       # Real-time training display
-│   │
-│   ├── utils/                         # 🛠️ UTILITIES
-│   │   ├── __init__.py
-│   │   ├── validation.py             # Input validation
-│   │   ├── seed.py                   # Random seed management
-│   │   ├── checkpoint.py             # Checkpoint save/load utilities
-│   │   ├── metrics.py                # Metric calculation utilities
-│   │   ├── time.py                   # Time formatting
-│   │   └── model_summary.py          # Model summary printing
-│   │
-│   └── legacy/                        # ⚠️ LEGACY COMPATIBILITY LAYER
-│       ├── __init__.py               # Legacy exports
-│       ├── slga.py                   # SLGAModule (deprecated → use SLGAAttention)
-│       ├── model.py                  # LLMTransformer, Config (deprecated)
-│       ├── data.py                   # Legacy data functions
-│       └── landmarks.py              # Legacy landmark functions
-│
-├── scripts/                           # 🚀 EXECUTABLE SCRIPTS
-│   ├── train.py                      # Training script
-│   ├── generate.py                   # Text generation script
-│   ├── eval_perplexity.py            # Perplexity evaluation
-│   └── eval_longcontext.py           # Long-context benchmarks
-│
-├── tests/                             # 🧪 TEST SUITE (600+ tests, 95%+ coverage)
-│   ├── unit/                         # Unit tests (450+)
-│   │   ├── attention/               # Attention mechanism tests
-│   │   ├── landmarks/               # Landmark selection tests
-│   │   ├── model/                   # Model component tests
-│   │   └── ...
-│   ├── integration/                  # Integration tests (150+)
-│   │   ├── test_attention_pipeline.py
-│   │   ├── test_data_pipeline.py
-│   │   ├── test_generation_pipeline.py
-│   │   └── test_training_pipeline.py
-│   ├── regression/                   # Regression tests (31)
-│   │   ├── critical/                # Critical bug fixes
-│   │   ├── landmarks/               # Landmark-related issues
-│   │   └── training/                # Training-related issues
-│   ├── e2e/                          # End-to-end tests
-│   ├── performance/                  # Performance benchmarks
-│   └── oneshot/                      # Standalone validation scripts
-│       ├── python/                  # Python diagnostic scripts
-│       └── shell/                   # Shell test scripts
-│
-├── docs/                              # 📚 DOCUMENTATION
-│   ├── api/                          # API documentation
-│   ├── guides/                       # User guides
-│   └── architecture/                 # Architecture documentation
-│
-├── requirements.txt                   # Core dependencies
-├── setup.py                          # Package setup
-├── pyproject.toml                    # Project configuration
-├── .pre-commit-config.yaml           # Pre-commit hooks
-└── README.md                         # This file
+slga-plus/
+├── src/                          # Source code
+│   ├── core/                    # Core implementations
+│   │   ├── attention/          # Attention mechanisms (SLGA, local, global)
+│   │   ├── landmarks/          # Landmark selection (learned, heuristic)
+│   │   └── layers/             # Transformer layers
+│   ├── models/                  # Model orchestration
+│   │   ├── slga_model.py       # Main transformer model
+│   │   ├── config.py           # Model configuration
+│   │   └── generation.py       # Text generation
+│   ├── data/                    # Data pipeline
+│   │   ├── loaders/            # Dataset loaders
+│   │   ├── processors/         # Text processors
+│   │   └── tokenizers/         # Tokenizer wrappers
+│   ├── training/                # Training infrastructure
+│   │   ├── trainers/           # Trainer implementations
+│   │   ├── callbacks/          # Training callbacks
+│   │   ├── optimizers/         # Optimizer factories
+│   │   └── schedulers/         # LR schedulers
+│   ├── generation/              # Text generation
+│   │   ├── generator.py        # Main generator
+│   │   ├── sampling.py         # Sampling strategies
+│   │   └── penalties.py        # Repetition penalties
+│   ├── monitoring/              # Observability
+│   │   ├── metrics.py          # Training metrics
+│   │   ├── loggers/            # Logging utilities
+│   │   └── profilers/          # Performance profilers
+│   └── utils/                   # Utilities
+├── scripts/                     # Executable scripts
+│   ├── train.py                # Training script
+│   ├── generate.py             # Generation script
+│   └── eval_perplexity.py      # Evaluation script
+├── tests/                       # Test suite (600+ tests)
+├── docs/                        # Documentation
+└── requirements.txt             # Dependencies
 ```
-
----
-
-## 🔗 Import Hierarchy & Usage Guide
-
-### High-Level API (Recommended for Most Users)
-
-For typical model building, training, and generation tasks, import from top-level modules:
-
-```python
-# Model components
-from src.models import (
-    SLGATransformer,      # Main transformer model
-    TextGenerator,         # Text generation
-    ModelConfig,           # Configuration
-    PRESET_CONFIGS,        # Preset configurations ("small", "default", "large")
-    get_config,            # Get preset config
-)
-
-# Data pipeline
-from src.data import (
-    TextDatasetLoader,     # Load text datasets
-    TokenizerWrapper,      # Tokenizer wrapper
-    CollatorLocal,         # Local attention collator
-    CollatorLocalGlobal,   # Local-global attention collator
-)
-
-# Training infrastructure
-from src.training.trainers import SLGATrainer
-from src.training.optimizers import OptimizerFactory
-```
-
-### Advanced/Custom Implementations
-
-For custom attention mechanisms, landmark selectors, or layer implementations:
-
-```python
-# Core attention components
-from src.core.attention import (
-    SLGAAttention,        # SLGA attention mechanism
-    LocalAttention,       # Local windowed attention
-    GlobalAttention,      # Global landmark attention
-)
-
-# Landmark selection strategies
-from src.core.landmarks import (
-    LearnedLandmarkSelector,      # Content-based (differentiable)
-    PositionalLandmarkSelector,   # Position-based (differentiable)
-    HybridLandmarkSelector,       # Content + Position (adaptive)
-    HeuristicLandmarkSelector,    # Fixed heuristic (non-learnable)
-    LandmarkFactory,              # Factory for creating selectors
-)
-
-# Layer components
-from src.core.layers import (
-    embedding,            # Embedding layers module
-    feedforward,          # Feed-forward networks module
-    transformer_block,    # Transformer block module
-)
-```
-
-### Legacy Compatibility (Deprecated)
-
-For backward compatibility with v1.x code (will be removed in v3.0):
-
-```python
-from src import (
-    SLGAModule,           # Use src.core.attention.SLGAAttention instead
-    Config,               # Use src.models.ModelConfig instead
-    LLMTransformer,       # Use src.models.SLGATransformer instead
-)
-```
-
-### Import Hierarchy Table
-
-| Use Case | Import From | When to Use |
-|----------|-------------|-------------|
-| **Building models** | `src.models` | Default choice for most users |
-| **Training models** | `src.training` | Setting up training pipelines |
-| **Loading data** | `src.data` | Dataset loading and processing |
-| **Generating text** | `src.models` or `src.generation` | Text generation tasks |
-| **Custom attention** | `src.core.attention` | Implementing custom mechanisms |
-| **Custom landmarks** | `src.core.landmarks` | Custom landmark strategies |
-| **Custom layers** | `src.core.layers` | Building custom architectures |
-| **Utilities** | `src.utils` | Checkpointing, metrics, validation |
-| **Legacy code** | `src.legacy` | Backward compatibility only |
-
----
-
-## 🔄 Migration Guide (v1.x → v2.x)
-
-### Breaking Changes
-
-| Old API (v1.x) | New API (v2.x) | Status |
-|---------------|---------------|---------|
-| `from src import SLGAModule` | `from src.core.attention import SLGAAttention` | Deprecated, backward compatible until v3.0 |
-| `from src import Config` | `from src.models import ModelConfig` | Deprecated, backward compatible until v3.0 |
-| `from src import LLMTransformer` | `from src.models import SLGATransformer` | Deprecated, backward compatible until v3.0 |
-| `from src.data.loaders.text_loader import TextDataLoader` | `from src.data.loaders.text_dataset import TextDatasetLoader` | Fixed in v2.0 |
-
-### Migration Steps
-
-#### Step 1: Update Imports
-
-**Old (v1.x):**
-```python
-from src import SLGAModule, Config, LLMTransformer, get_tokenizer
-
-config = Config(d_model=512, n_layers=12)
-model = LLMTransformer(config)
-```
-
-**New (v2.x):**
-```python
-from src.models import SLGATransformer, ModelConfig
-from src.data import TokenizerWrapper
-
-config = ModelConfig(d_model=512, n_layers=12)  # or use ModelConfig.from_preset("default")
-model = SLGATransformer(config)
-```
-
-#### Step 2: Update Data Loading
-
-**Old (v1.x):**
-```python
-from src import load_text_dataset, get_tokenizer
-
-tokenizer = get_tokenizer("gpt2")
-dataset = load_text_dataset("wikitext", split="train")
-```
-
-**New (v2.x):**
-```python
-from src.data import TextDatasetLoader, TokenizerWrapper
-
-tokenizer = TokenizerWrapper("gpt2")
-loader = TextDatasetLoader("wikitext", tokenizer=tokenizer)
-dataset = loader.load_dataset(split="train")
-```
-
-#### Step 3: Update Attention Components
-
-**Old (v1.x):**
-```python
-from src import SLGAModule
-
-attention = SLGAModule(d_model=512, num_heads=8)
-```
-
-**New (v2.x):**
-```python
-from src.core.attention import SLGAAttention
-
-attention = SLGAAttention(d_model=512, num_heads=8, local_window_size=256)
-```
-
-### Deprecation Timeline
-
-- **v2.0 (Current)**: Legacy API deprecated but still works via compatibility layer
-- **v2.5 (Q2 2025)**: Deprecation warnings added to legacy imports
-- **v3.0 (Q4 2025)**: Legacy compatibility layer removed
-
-### Why the Changes?
-
-1. **Clean Architecture**: New structure follows domain-driven design principles
-2. **Better Organization**: Clear separation between core logic, models, and infrastructure
-3. **Extensibility**: Factory patterns enable easy customization
-4. **Type Safety**: Protocol-based interfaces for better type checking
-5. **Modern Best Practices**: Follows current Python packaging standards
 
 ---
 
@@ -740,66 +430,26 @@ torchrun --nproc_per_node=4 scripts/train.py --distributed
 ### Clean Architecture Layers
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  🏛️ DOMAIN LAYER (Protocols & Abstractions)            │
-│                   src/domain/                            │
-│  • entities/        - Transformer protocols             │
-│  • services/        - Attention & Landmark protocols    │
-│  • repositories/    - Data repository protocols         │
-│  • value_objects/   - Configuration objects             │
-└─────────────────────────────────────────────────────────┘
-                         ↓ depends on
-┌─────────────────────────────────────────────────────────┐
-│  🔧 CORE LAYER (Business Logic)                         │
-│                   src/core/                              │
-│  • attention/       - SLGA, Local, Global attention     │
-│  • landmarks/       - Learned, Heuristic selectors      │
-│  • layers/          - Embedding, FFN, Transformer blocks│
-└─────────────────────────────────────────────────────────┘
-                         ↓ depends on
-┌─────────────────────────────────────────────────────────┐
-│  🏗️ MODELS LAYER (Orchestration)                       │
-│                   src/models/                            │
-│  • slga_model.py    - Complete SLGATransformer         │
-│  • generation.py    - TextGenerator with sampling       │
-│  • factory.py       - ModelFactory (extensibility)     │
-│  • config.py        - ModelConfig with presets         │
-└─────────────────────────────────────────────────────────┘
-                         ↓ depends on
-┌─────────────────────────────────────────────────────────┐
-│  📦 INFRASTRUCTURE LAYERS                                │
-│                                                          │
-│  📊 DATA (src/data/)          🎓 TRAINING (src/training/)│
-│  • Loaders                    • Trainers                 │
-│  • Processors                 • Callbacks                │
-│  • Tokenizers                 • Optimizers               │
-│  • Collators                  • Schedulers               │
-│                                                          │
-│  ✨ GENERATION (src/generation/)  📊 MONITORING (src/monitoring/)│
-│  • Generator                  • Metrics                  │
-│  • Sampling                   • Live tracking            │
-│  • Penalties                  • Realtime display         │
-│                                                          │
-│  🛠️ UTILITIES (src/utils/)    ⚠️ LEGACY (src/legacy/)    │
-│  • Validation                 • SLGAModule (deprecated)  │
-│  • Checkpointing              • LLMTransformer (deprecated)│
-│  • Metrics                    • Backward compatibility   │
-└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────┐
+│          Domain Layer (Protocols)       │
+│  Entities, Services, Repositories       │
+└─────────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────────┐
+│           Core Layer                     │
+│  Attention, Landmarks, Layers           │
+└─────────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────────┐
+│          Models Layer                    │
+│  Orchestration, Factory Patterns        │
+└─────────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────────┐
+│      Infrastructure Layers              │
+│  Data, Training, Monitoring, Utils      │
+└─────────────────────────────────────────┘
 ```
-
-### Layer Responsibilities
-
-| Layer | Directory | Purpose | Key Components |
-|-------|-----------|---------|----------------|
-| **Domain** | `src/domain/` | Define interfaces & contracts | Protocols, entities, value objects |
-| **Core** | `src/core/` | Implement business logic | Attention mechanisms, landmark selection, layers |
-| **Models** | `src/models/` | Orchestrate components | SLGATransformer, TextGenerator, configs |
-| **Data** | `src/data/` | Handle data pipeline | Loaders, processors, tokenizers, collators |
-| **Training** | `src/training/` | Training infrastructure | Trainers, callbacks, optimizers, schedulers |
-| **Generation** | `src/generation/` | Text generation logic | Sampling, penalties, stopping criteria |
-| **Monitoring** | `src/monitoring/` | Observability & metrics | Live metrics, displays, logging |
-| **Utils** | `src/utils/` | Shared utilities | Validation, checkpointing, time formatting |
-| **Legacy** | `src/legacy/` | Backward compatibility | Deprecated v1.x API wrappers |
 
 ### Design Principles
 
@@ -835,8 +485,8 @@ Contributions are welcome! Please follow these steps:
 ### Setup Development Environment
 
 ```bash
-git clone https://github.com/JacquesGariepy/slga.git
-cd slga
+git clone https://github.com/yourusername/slga-plus.git
+cd slga-plus
 pip install -e ".[dev]"
 pre-commit install
 ```
@@ -886,11 +536,12 @@ of this software and associated documentation files...
 If you use SLGA-Plus in your research:
 
 ```bibtex
-@software{slga_plus_2024,
+@software{slga_plus_2025
+,
   title={SLGA-Plus: Efficient Sparse Local-Global Attention for Long Sequences},
   author={SLGA-Plus Contributors},
   year={2024},
-  url={https://github.com/JacquesGariepy/slga},
+  url={https://github.com/yourusername/slga-plus},
   version={2.0}
 }
 ```
@@ -899,8 +550,8 @@ If you use SLGA-Plus in your research:
 
 ## 📞 Support
 
-- **Issues**: [GitHub Issues](https://github.com/JacquesGariepy/slga/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/JacquesGariepy/slga/discussions)
+- **Issues**: [GitHub Issues](https://github.com/yourusername/slga-plus/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/yourusername/slga-plus/discussions)
 
 ---
 
@@ -908,6 +559,6 @@ If you use SLGA-Plus in your research:
 
 **Built for the open source community**
 
-[⭐ Star on GitHub](https://github.com/JacquesGariepy/slga) • [🐛 Report Bug](https://github.com/JacquesGariepy/slga/issues) • [💡 Request Feature](https://github.com/JacquesGariepy/slga/issues)
+[⭐ Star on GitHub](https://github.com/yourusername/slga-plus) • [🐛 Report Bug](https://github.com/yourusername/slga-plus/issues) • [💡 Request Feature](https://github.com/yourusername/slga-plus/issues)
 
 </div>
