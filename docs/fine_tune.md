@@ -172,7 +172,7 @@ save:
 
 log:
   tensorboard: true
-  project: "slga-plus"
+  project: "slga"
 ```
 
 > La boucle d’entraînement supporte déjà le **warmup global**, les **pertes landmarks**, et la **CE shiftée** ; ton archi gère la **sélection de landmarks** avec Gumbel côté train.  

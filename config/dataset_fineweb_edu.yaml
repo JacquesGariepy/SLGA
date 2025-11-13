@@ -82,7 +82,7 @@ training:
     eval_steps: 500
     wandb:
       enabled: true
-      project: "slga-plus-fineweb"
+      project: "slga-fineweb"
       entity: "your-team"
 
 # Expected metrics

@@ -8,7 +8,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import torch
-from src.landmarks import LearnableLandmarkSelector
+from src.legacy.landmarks import LearnableLandmarkSelector
 
 
 def test_gumbel_in_amp():

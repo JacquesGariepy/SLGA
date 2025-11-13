@@ -1,0 +1,75 @@
+seed: 1234
+device: cuda
+
+model:
+  vocab_size: 50257
+  max_seq_len: 512
+  embed_dim: 256              # User requested d_model=256
+  num_heads: 4                # 256/64 = 4 heads (64-dim per head)
+  ff_hidden_multiplier: 4
+  n_layers: 6                 # User requested 6 layers
+  dropout_rate: 0.1
+
+  # Local-global attention configuration
+  local_window: 64
+  global_k: 16
+  gated_fusion: true
+  learned_landmarks: true
+  dilated_windows: true
+  diverse_topk: true
+
+train:
+  # Sequence length curriculum (simplified for quick test)
+  seq_len_start: 256
+  seq_len_mid: 384
+  seq_len_final: 512
+  seq_len_warmup_steps: 1000
+
+  # Quick test training configuration
+  batch_size: 8               # Small batch for quick testing
+  accum_steps: 1              # No accumulation for simplicity
+
+  lr: 3.0e-4
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  weight_decay: 0.1
+
+  warmup_steps: 500           # User requested max_steps=5000
+  max_steps: 5000             # 5000 steps as requested
+  grad_clip: 1.0
+
+  # Memory/speed optimizations
+  amp: true
+  amp_dtype: "fp16"
+  grad_checkpointing: false
+  torch_compile: false        # Disabled for faster startup
+
+  # Collator configuration
+  collator: "local"
+  global_every: 64
+  max_global: 32
+
+  # Loss weights (disabled for quick test)
+  spacing_loss_weight: 0.0
+  sparsity_loss_weight: 0.0
+
+data:
+  dataset_name: "wikipedia"
+  dataset_config: "20220301.en"
+  text_column: "text"
+  streaming: true
+  num_workers: 4
+  prefetch_factor: 2
+  eval_split_pct: 0.01        # 1% for validation
+
+save:
+  out_dir: "checkpoints/quick_test"
+  save_every: 1000            # Save every 1000 steps
+  keep_last_n: 3              # Keep last 3 checkpoints
+
+log:
+  val_every: 500              # Validate every 500 steps
+  log_every: 50               # Log every 50 steps
+  detail_every: 100           # Detailed logs every 100 steps
+  tensorboard: false          # Disabled for quick test
+  system_info_interval_seconds: 0  # Disabled for quick test

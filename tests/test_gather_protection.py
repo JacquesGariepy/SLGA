@@ -13,9 +13,9 @@ from pathlib import Path
 # Add parent directory to path to allow absolute imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.model import LLMTransformer, Config
+from src.legacy.model import LLMTransformer, Config
 from src.slga import SLGAModule
-from src.landmarks import LearnableLandmarkSelector, PositionalLandmarkSelector, HybridLandmarkSelector
+from src.legacy.landmarks import LearnableLandmarkSelector, PositionalLandmarkSelector, HybridLandmarkSelector
 
 
 def test_model_landmark_gather():

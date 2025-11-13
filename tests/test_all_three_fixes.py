@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import torch
 import argparse
-from src.model import Config, LLMTransformer
+from src.legacy.model import Config, LLMTransformer
 
 
 def test_gumbel_training_activation():

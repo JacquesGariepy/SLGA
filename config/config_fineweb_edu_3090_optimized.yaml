@@ -105,7 +105,7 @@ save:
 
 log:
   wandb: false
-  project: "slga-plus-fineweb"
+  project: "slga-fineweb"
   run_name: null
   tensorboard: true
 

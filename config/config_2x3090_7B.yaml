@@ -107,7 +107,7 @@ save:
 
 log:
   wandb: true                # 🔧 RECOMMENDED for large runs
-  project: "slga-plus-7B"
+  project: "slga-7B"
   run_name: "slga-7B-fineweb-350B"
   tensorboard: true
 

@@ -1,0 +1,71 @@
+# Labeler configuration for automatic PR labeling
+
+# Core source code
+'area: core':
+  - 'src/core/**/*'
+  - 'src/modules/**/*'
+
+# Attention mechanisms
+'area: attention':
+  - 'src/attention/**/*'
+  - 'src/**/attention*.py'
+
+# Testing
+'area: tests':
+  - 'tests/**/*'
+  - '**/*test*.py'
+  - '**/*_test.py'
+
+# Documentation
+'area: documentation':
+  - 'docs/**/*'
+  - '**/*.md'
+  - '**/*.rst'
+
+# CI/CD
+'area: ci':
+  - '.github/**/*'
+  - '.github/workflows/**/*'
+  - 'setup.py'
+  - 'setup.cfg'
+  - 'pyproject.toml'
+
+# Dependencies
+'area: dependencies':
+  - 'requirements*.txt'
+  - 'setup.py'
+  - 'pyproject.toml'
+
+# Performance
+'area: performance':
+  - 'tests/performance/**/*'
+  - 'tests/benchmarks/**/*'
+
+# Examples
+'area: examples':
+  - 'examples/**/*'
+
+# Size labels
+'size: XS':
+  - changed-files:
+    - 1-10
+
+'size: S':
+  - changed-files:
+    - 11-50
+
+'size: M':
+  - changed-files:
+    - 51-100
+
+'size: L':
+  - changed-files:
+    - 101-500
+
+'size: XL':
+  - changed-files:
+    - 501-1000
+
+'size: XXL':
+  - changed-files:
+    - 1001-*

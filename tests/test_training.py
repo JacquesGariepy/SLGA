@@ -17,7 +17,7 @@ src_path = Path(__file__).parent.parent / "src"
 sys.path.insert(0, str(src_path.parent))
 
 # Import with package name
-from src.model import LLMTransformer, Config as SLGAPlusConfig
+from src.legacy.model import LLMTransformer, Config as SLGAPlusConfig
 
 
 class TestTrainingSetup:
@@ -144,7 +144,7 @@ class TestTrainingLoop:
 
             optimizer.zero_grad()
             logits = model(idx)
-        loss = F.cross_entropy(logits.view(-1, logits.shape[-1]), targets.view(-1))
+            loss = F.cross_entropy(logits.view(-1, logits.shape[-1]), targets.view(-1))
             loss.backward()
             optimizer.step()
 

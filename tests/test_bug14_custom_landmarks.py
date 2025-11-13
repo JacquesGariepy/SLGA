@@ -8,7 +8,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import torch
-from src.model import LLMTransformer, Config
+from src.legacy.model import LLMTransformer, Config
 
 
 def test_custom_landmarks_preserved():

@@ -1,5 +1,0 @@
-- [ ] Analyze model outputs to expose gate metrics and global selection info
-- [ ] Extend SLGAModule/LLMTransformer to store gate and landmark monitor data
-- [ ] Update training loop logging with gate entropy, routing ratios, coverage, landmark distribution
-- [ ] Implement synthetic long dependency recall evaluation and integrate into validation logging
-- [ ] Add TensorBoard/W&B logging entries for new metrics and optional histograms

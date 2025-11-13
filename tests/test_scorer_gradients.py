@@ -10,8 +10,8 @@ import os
 
 # Ajouter le répertoire racine au path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from src.model import LLMTransformer, Config
-from src.landmarks import landmark_spacing_loss
+from src.legacy.model import LLMTransformer, Config
+from src.legacy.landmarks import landmark_spacing_loss
 
 def test_scorer_gradients(checkpoint_path='out_slga/ckpt_18000', config_path='config/config.wikipedia.yaml'):
     """

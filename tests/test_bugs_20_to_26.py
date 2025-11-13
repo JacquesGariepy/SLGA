@@ -8,7 +8,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import torch
-from src.model import Config, LLMTransformer
+from src.legacy.model import Config, LLMTransformer
 
 
 def test_bug20_dynamic_vocab_size():

@@ -170,7 +170,7 @@ save:
 
 log:
   wandb: true
-  project: "slga-plus-671B-moe"
+  project: "slga-671B-moe"
   run_name: "slga-671B-moe-14.8T"
   tensorboard: true
 

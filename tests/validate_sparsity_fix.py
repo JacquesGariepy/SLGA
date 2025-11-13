@@ -14,7 +14,7 @@ import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from src.landmarks import landmark_sparsity_loss
+from src.legacy.landmarks import landmark_sparsity_loss
 
 
 def main():

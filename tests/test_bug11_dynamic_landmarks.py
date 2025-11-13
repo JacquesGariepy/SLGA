@@ -11,8 +11,8 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import torch
-from src.model import LLMTransformer, Config
-from src.data import get_tokenizer
+from src.legacy.model import LLMTransformer, Config
+from src.legacy.data import get_tokenizer
 
 
 def test_bug11_landmarks_update_during_generation():

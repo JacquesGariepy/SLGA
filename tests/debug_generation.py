@@ -5,8 +5,8 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath('.'))
 
-from src.model import Config, LLMTransformer
-from src.data import get_tokenizer
+from src.legacy.model import Config, LLMTransformer
+from src.legacy.data import get_tokenizer
 
 print("="*80)
 print("DIAGNOSTIC GÉNÉRATION - Step 4000 (WITH NEWLINE SUPPRESSION)")

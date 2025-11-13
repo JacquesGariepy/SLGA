@@ -84,7 +84,7 @@ save:
 
 log:
   wandb: false                # Activer pour suivi W&B
-  project: "slga-plus"
+  project: "slga"
   run_name: null              # Auto-généré si null
   tensorboard: true           # TensorBoard activé
 

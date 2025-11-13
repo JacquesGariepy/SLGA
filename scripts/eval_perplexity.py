@@ -13,7 +13,7 @@ import os
 # Add project root to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.model import LLMTransformer, Config
+from src.legacy.model import LLMTransformer, Config
 from transformers import GPT2Tokenizer
 
 

@@ -66,14 +66,14 @@ train:
   save_every: 200            # 1 → 1000 (trop de checkpoints sinon!)
   keep_last_checkpoints: 10    # NOUVEAU: rotation des checkpoints (garde seulement les 10 derniers)
   eval_every: 750              # 1000 → 500 (validation plus fréquente)
-  log_every: 50               # 50 → 10 (affichage TRÈS fréquent pour tests)
+  log_every: 5               # 50 → 10 (affichage TRÈS fréquent pour tests)
   debug_checkpoints: false    # NOUVEAU: désactiver logs debug checkpoint (réduit le bruit)
 
 data:
 
   keep_last_checkpoints: 10
   eval_every: 750
-  log_every: 50
+  log_every: 5
   debug_checkpoints: false
   dataset: "wikimedia/wikipedia"
   subset: "20231101.en"       # Version récente de Wikipedia en anglais
@@ -90,7 +90,7 @@ save:
 
 log:
   wandb: false                # Activer pour suivi W&B
-  project: "slga-plus"
+  project: "slga"
   run_name: null              # Auto-généré si null
   tensorboard: true           # TensorBoard activé
 

@@ -109,7 +109,7 @@ save:
 
 log:
   wandb: false
-  project: "slga-plus-fineweb"   # 🔧 CHANGED: Separate W&B project
+  project: "slga-fineweb"   # 🔧 CHANGED: Separate W&B project
   run_name: null
   tensorboard: true
 

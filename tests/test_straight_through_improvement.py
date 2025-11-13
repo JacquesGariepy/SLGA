@@ -22,7 +22,7 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.landmarks import LearnableLandmarkSelector
+from src.legacy.landmarks import LearnableLandmarkSelector
 
 
 def old_straight_through_topk(scores: torch.Tensor, k: int):

@@ -90,7 +90,7 @@ def test_patch_2_sparsity_gradients() -> Tuple[bool, str]:
     FIX: Utiliser torch.sum(x) au lieu de torch.sum()
     """
     try:
-        from src.model import landmark_sparsity_loss
+        from src.legacy.model import landmark_sparsity_loss
 
         # Create test tensors with gradients enabled
         batch_size, seq_len, num_landmarks = 2, 128, 16
@@ -161,7 +161,7 @@ def test_patch_3_selection_scores_passed() -> Tuple[bool, str]:
             return False, f"Found {len(matches)} calls but none pass selection_scores"
 
         # Additional check: verify the function signature accepts it
-        from src.model import landmark_spacing_loss
+        from src.legacy.model import landmark_spacing_loss
         import inspect
 
         sig = inspect.signature(landmark_spacing_loss)
@@ -182,7 +182,7 @@ def test_patch_4_attention_leak_fix() -> Tuple[bool, str]:
     FIX: Ajouter masquage des landmarks futurs dans l'attention
     """
     try:
-        from src.model import SLGAModule
+        from src.legacy.model import SLGAModule
 
         # Create minimal SLGA module
         config = {
@@ -282,7 +282,7 @@ def test_bonus_data_quality() -> Tuple[bool, str]:
     Check: Distribution des labels, pas de -100 dans targets
     """
     try:
-        from src.data import WikipediaDataModule
+        from src.legacy.data import WikipediaDataModule
 
         # Create minimal data module
         config = {

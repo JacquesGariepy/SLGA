@@ -1,14 +1,133 @@
-scripts/__pycache__/
+# ============================================================================
+# Python Cache & Compiled Files
+# ============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# ============================================================================
+# Virtual Environments
+# ============================================================================
+.venv/
+venv/
+ENV/
+env/
+.virtualenv/
+
+# ============================================================================
+# IDE & Editor Files
+# ============================================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ============================================================================
+# Testing & Coverage
+# ============================================================================
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+*.cover
+.hypothesis/
+
+# Test results
+*_results.txt
+*_results/
+validation_results/
+D*SLGA2validation_results*
+
+# ============================================================================
+# Type Checking & Linting
+# ============================================================================
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.pylint.d/
+
+# ============================================================================
+# Package Management
+# ============================================================================
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+*.manifest
+*.spec
+
+# ============================================================================
+# PyInstaller
+# ============================================================================
+*.log
+*.pot
+
+# ============================================================================
+# Machine Learning & Training
+# ============================================================================
+# Model checkpoints
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+checkpoints/
+
+# Training outputs
 out_slga/
-src/__pycache__/
+out_slga_fineweb/
+bk_model/
+runs/
+wandb/
+mlruns/
+
+# Training logs
+training.log
+training_*.log
+*.tensorboard
+
+# Data directories (large datasets)
+data/raw/
+data/processed/
+data/cache/
+
+# ============================================================================
+# Claude Code / Claude Flow / MCP
+# ============================================================================
+# Claude Code settings (user-specific)
+.claude/
+.claude/settings.local.json
 
 # Claude Flow generated files
-.claude/settings.local.json
-.mcp.json
+.claude-flow/
 claude-flow.config.json
+claude-flow
+claude-flow.cmd
+CLAUDE.md
+
+# MCP server config (contains local paths)
+.mcp.json
+
+# Swarm & coordination files
 .swarm/
 .hive-mind/
-.claude-flow/
 memory/
 coordination/
 memory/claude-flow-data.json
@@ -19,17 +138,97 @@ memory/agents/*
 coordination/memory_bank/*
 coordination/subtasks/*
 coordination/orchestration/*
+.github
+# Hive Mind prompts
+hive-mind-prompt-*.txt
+docs/
+
+# ============================================================================
+# Database Files
+# ============================================================================
 *.db
 *.db-journal
 *.db-wal
 *.sqlite
+*.sqlite3
 *.sqlite-journal
 *.sqlite-wal
-claude-flow
-# Removed Windows wrapper files per user request
-hive-mind-prompt-*.txt
-.claude/
-bk_model/
-training.log
-out_slga_fineweb/
-tests/__pycache__/
+
+# ============================================================================
+# Documentation (Generated)
+# ============================================================================
+# Keep committed documentation, but ignore build artifacts
+docs/_build/
+docs/.doctrees/
+site/
+
+# ============================================================================
+# OS-specific
+# ============================================================================
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Linux
+*~
+
+# ============================================================================
+# Project-Specific Temporary Files
+# ============================================================================
+# Temporary test files
+scripts/test.py
+scripts/temp*.py
+nul
+
+# Backup files
+*.bak
+*.old
+*.orig
+
+# ============================================================================
+# Security & Credentials
+# ============================================================================
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+credentials.json
+secrets.yaml
+
+# ============================================================================
+# CI/CD Artifacts
+# ============================================================================
+.github/workflows/*.log
+
+# ============================================================================
+# Keep These Files (Explicit Inclusions)
+# ============================================================================
+# Configuration files that SHOULD be committed
+!pyproject.toml
+!pytest.ini
+!.coveragerc
+!.pre-commit-config.yaml
+!.pylintrc
+!.github/
+
+# Documentation that SHOULD be committed
+!docs/**/*.md
+!README.md
+!LICENSE
+!CONTRIBUTING.md
+
+# Example files
+!examples/**
+docs/hive-mind/quality-analysis-report.md
+docs/REORGANIZATION_SUMMARY.md
+.github/workflows/quality.yml
+archive/

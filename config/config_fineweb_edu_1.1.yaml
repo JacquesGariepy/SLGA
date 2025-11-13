@@ -128,7 +128,7 @@ save:
 
 log:
   wandb: false
-  project: "slga-plus-fineweb-v2"
+  project: "slga-fineweb-v2"
   run_name: "anti-collapse-from-4k"
   tensorboard: true
 

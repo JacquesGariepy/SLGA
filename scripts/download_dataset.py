@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from datasets import load_dataset
-from src.data import get_tokenizer
+from src.legacy.data import get_tokenizer
 
 
 def download_and_prepare(

@@ -11,7 +11,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import torch
-from src.data import CollatorLocalGlobal, get_tokenizer
+from src.legacy.data import CollatorLocalGlobal, get_tokenizer
 
 
 def test_bug10_positions_not_tokens():
@@ -188,7 +188,7 @@ def test_bug10_interaction_with_model():
     print("BUG #10 MODEL INTERACTION TEST")
     print("=" * 80)
 
-    from src.model import LLMTransformer, Config
+    from src.legacy.model import LLMTransformer, Config
 
     # Setup small model
     cfg = Config(

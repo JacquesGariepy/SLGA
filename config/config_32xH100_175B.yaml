@@ -124,7 +124,7 @@ save:
 
 log:
   wandb: true
-  project: "slga-plus-175B"
+  project: "slga-175B"
   run_name: "slga-175B-fineweb-3T"
   tensorboard: true
 

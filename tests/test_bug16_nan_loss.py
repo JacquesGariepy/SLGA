@@ -8,7 +8,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import torch
-from src.landmarks import landmark_spacing_loss
+from src.legacy.landmarks import landmark_spacing_loss
 
 
 def test_spacing_loss_with_small_G():
