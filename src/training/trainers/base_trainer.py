@@ -300,6 +300,7 @@ class BaseTrainer:
             state=self.state,
             out_dir=self.out_dir,
             custom_dir=custom_dir,
+            accelerator=self.accelerator,  # ✅ Add accelerator to kwargs
         )
 
     def load_checkpoint(self, checkpoint_path: str) -> int:

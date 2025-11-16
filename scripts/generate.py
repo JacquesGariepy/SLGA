@@ -16,7 +16,7 @@ import json
 # Add project root to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.legacy.model import Config, LLMTransformer
+from src.models import SLGATransformer, Config
 from src.generation import (
     TextGenerator,
     GenerationConfig,
@@ -361,7 +361,7 @@ def main():
     print("Creating model...")
     try:
         model_cfg = Config(**cfg["model"])
-        model = LLMTransformer(model_cfg)
+        model = SLGATransformer(model_cfg)
         print(f"✓ Model created: {model.get_num_params() / 1e6:.2f}M parameters")
         print()
     except (TypeError, KeyError, ValueError) as e:

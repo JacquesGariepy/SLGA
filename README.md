@@ -1,4 +1,4 @@
-# SLGA-Plus: Sparse Local-Global Attention Transformer
+# SLGA: Sparse Local-Global Attention Transformer
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.0+](https://img.shields.io/badge/PyTorch-2.0+-orange.svg)](https://pytorch.org/)
@@ -6,7 +6,7 @@
 [![Tests](https://img.shields.io/badge/Tests-600%2B-success.svg)](#-testing--validation)
 [![Coverage](https://img.shields.io/badge/Coverage-95%25%2B-brightgreen.svg)](#-testing--validation)
 
-**SLGA-Plus** is a production-ready Transformer LLM with sparse local-global attention for long sequences, optimized for RTX 3090 24GB.
+**SLGA** is a production-ready Transformer LLM with sparse local-global attention for long sequences, optimized for RTX 3090 24GB.
 
 ---
 
@@ -50,8 +50,8 @@
 ### Basic Installation
 
 ```bash
-git clone https://github.com/yourusername/slga-plus.git
-cd slga-plus
+git clone https://github.com/JacquesGariepy/slga.git
+cd slga
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
@@ -348,7 +348,7 @@ mypy src/                       # Type checking
 ## 📁 Project Structure
 
 ```
-slga-plus/
+slga/
 ├── src/                          # Source code
 │   ├── core/                    # Core implementations
 │   │   ├── attention/          # Attention mechanisms (SLGA, local, global)
@@ -485,8 +485,8 @@ Contributions are welcome! Please follow these steps:
 ### Setup Development Environment
 
 ```bash
-git clone https://github.com/yourusername/slga-plus.git
-cd slga-plus
+git clone https://github.com/JacquesGariepy/slga.git
+cd slga
 pip install -e ".[dev]"
 pre-commit install
 ```
@@ -523,7 +523,7 @@ git push origin feature/my-feature
 MIT License - see [LICENSE](LICENSE)
 
 ```
-Copyright (c) 2024 SLGA-Plus Contributors
+Copyright (c) 2025 SLGA Contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files...
@@ -533,15 +533,15 @@ of this software and associated documentation files...
 
 ## 📖 Citation
 
-If you use SLGA-Plus in your research:
+If you use SLGA in your research:
 
 ```bibtex
 @software{slga_plus_2025
 ,
-  title={SLGA-Plus: Efficient Sparse Local-Global Attention for Long Sequences},
-  author={SLGA-Plus Contributors},
-  year={2024},
-  url={https://github.com/yourusername/slga-plus},
+  title={SLGA: Efficient Sparse Local-Global Attention for Long Sequences},
+  author={SLGA Contributors},
+  year={2025},
+  url={https://github.com/JacquesGariepy/slga},
   version={2.0}
 }
 ```
@@ -550,8 +550,8 @@ If you use SLGA-Plus in your research:
 
 ## 📞 Support
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/slga-plus/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/slga-plus/discussions)
+- **Issues**: [GitHub Issues](https://github.com/JacquesGariepy/slga/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/JacquesGariepy/slga/discussions)
 
 ---
 
@@ -559,6 +559,6 @@ If you use SLGA-Plus in your research:
 
 **Built for the open source community**
 
-[⭐ Star on GitHub](https://github.com/yourusername/slga-plus) • [🐛 Report Bug](https://github.com/yourusername/slga-plus/issues) • [💡 Request Feature](https://github.com/yourusername/slga-plus/issues)
+[⭐ Star on GitHub](https://github.com/JacquesGariepy/slga) • [🐛 Report Bug](https://github.com/JacquesGariepy/slga/issues) • [💡 Request Feature](https://github.com/JacquesGariepy/slga/issues)
 
 </div>

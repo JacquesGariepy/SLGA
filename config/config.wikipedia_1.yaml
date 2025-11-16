@@ -63,7 +63,7 @@ train:
   global_weight_warmup_steps: 5000 # Poids du global augmente sur ces étapes
 
   # Sauvegarde et évaluation (OPTIMISÉ)
-  save_every: 200            # 1 → 1000 (trop de checkpoints sinon!)
+  save_every: 1            # 1 → 1000 (trop de checkpoints sinon!)
   keep_last_checkpoints: 10    # NOUVEAU: rotation des checkpoints (garde seulement les 10 derniers)
   eval_every: 750              # 1000 → 500 (validation plus fréquente)
   log_every: 5               # 50 → 10 (affichage TRÈS fréquent pour tests)

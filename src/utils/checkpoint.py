@@ -21,6 +21,8 @@ def save_checkpoint(
     step: int,
     accelerator: Any,
     keep_last_n: Optional[int] = None,
+    extra_state: Optional[dict] = None,
+    custom_dir: Optional[str] = None,
 ) -> None:
     """
     Save a checkpoint of the model and training state.
@@ -29,6 +31,7 @@ def save_checkpoint(
     - Model state dict (unwrapped from DDP/FSDP)
     - Model configuration (if available)
     - Training state (step, optimizer, scheduler)
+    - Extra state (best losses, etc.)
 
     Args:
         model: The PyTorch model to save.
@@ -39,6 +42,9 @@ def save_checkpoint(
         accelerator: Accelerator object (used to unwrap DDP/FSDP models).
         keep_last_n: If specified, only keep the N most recent checkpoints.
                     Older checkpoints will be automatically deleted.
+        extra_state: Optional dictionary with additional state (e.g., best losses).
+        custom_dir: Optional custom directory name (e.g., "best_overall").
+                   If not provided, uses "ckpt_{step}".
 
     Example:
         >>> save_checkpoint(
@@ -58,7 +64,8 @@ def save_checkpoint(
                 model_config.json     # Model configuration
                 trainer_state.pt      # Training state
     """
-    checkpoint_dir = os.path.join(out_dir, f"ckpt_{step}")
+    # Use custom directory name or default to ckpt_{step}
+    checkpoint_dir = os.path.join(out_dir, custom_dir or f"ckpt_{step}")
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     # Unwrap model (if DDP/FSDP wrapped)
@@ -82,6 +89,10 @@ def save_checkpoint(
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict() if scheduler else None,
     }
+
+    # Add extra state if provided (best losses, etc.)
+    if extra_state:
+        training_state.update(extra_state)
 
     torch.save(
         training_state,
@@ -113,6 +124,7 @@ def load_checkpoint(
     optimizer: Optional[torch.optim.Optimizer] = None,
     scheduler: Optional[Any] = None,
     device: str = "cuda",
+    extra_state: Optional[dict] = None,
 ) -> int:
     """
     Load a checkpoint from disk.
@@ -121,6 +133,7 @@ def load_checkpoint(
     - Model state dict
     - Optimizer state (if provided)
     - Scheduler state (if provided)
+    - Extra state (if provided)
 
     Args:
         checkpoint_dir: Directory containing the checkpoint files.
@@ -128,6 +141,7 @@ def load_checkpoint(
         optimizer: Optimizer to load state into (optional).
         scheduler: Scheduler to load state into (optional).
         device: Device to load tensors onto ('cuda' or 'cpu').
+        extra_state: Dictionary to populate with extra state (modified in-place).
 
     Returns:
         step: The training step number from the checkpoint.
@@ -136,14 +150,17 @@ def load_checkpoint(
         FileNotFoundError: If model checkpoint file is not found.
 
     Example:
+        >>> extra_state = {}
         >>> step = load_checkpoint(
         ...     checkpoint_dir="./checkpoints/ckpt_1000",
         ...     model=my_model,
         ...     optimizer=optimizer,
         ...     scheduler=scheduler,
-        ...     device="cuda"
+        ...     device="cuda",
+        ...     extra_state=extra_state
         ... )
         >>> print(f"Resumed from step {step}")
+        >>> print(f"Best loss: {extra_state.get('best_overall')}")
     """
     # Load model (try multiple file names for compatibility)
     model_path = os.path.join(checkpoint_dir, "model.pt")
@@ -176,6 +193,16 @@ def load_checkpoint(
         if scheduler and "scheduler" in trainer_state and trainer_state["scheduler"]:
             scheduler.load_state_dict(trainer_state["scheduler"])
             print(f"[✓] Scheduler state loaded")
+
+        # Load extra state if dictionary provided
+        if extra_state is not None:
+            # Standard keys that are not part of extra_state
+            standard_keys = {"step", "optimizer", "scheduler"}
+            for key, value in trainer_state.items():
+                if key not in standard_keys:
+                    extra_state[key] = value
+            if extra_state:
+                print(f"[✓] Extra state loaded: {list(extra_state.keys())}")
 
     print(f"[✓] Checkpoint loaded (step {step})")
 

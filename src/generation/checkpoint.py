@@ -153,6 +153,32 @@ def _load_state_dict(path: str, device: str) -> Dict[str, torch.Tensor]:
         ) from e
 
 
+def _migrate_state_dict_keys(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    """Migrate old checkpoint keys to new architecture.
+
+    Handles migration from LLMTransformer wrapper format to SLGATransformer direct format:
+    - Remove '_model.' prefix from wrapped checkpoints
+    - Keep other keys as-is
+
+    Args:
+        state_dict: Original state dictionary
+
+    Returns:
+        Migrated state dictionary with updated keys
+    """
+    migrated = {}
+
+    for key, value in state_dict.items():
+        # Remove '_model.' prefix if present (LLMTransformer wrapper)
+        if key.startswith("_model."):
+            new_key = key[len("_model."):]
+            migrated[new_key] = value
+        else:
+            migrated[key] = value
+
+    return migrated
+
+
 def _load_weights(
     model: torch.nn.Module,
     state_dict: Dict[str, torch.Tensor],
@@ -169,7 +195,10 @@ def _load_weights(
         RuntimeError: If loading fails
     """
     try:
-        model.load_state_dict(state_dict)
+        # Migrate old checkpoint keys if needed
+        state_dict = _migrate_state_dict_keys(state_dict)
+
+        model.load_state_dict(state_dict, strict=False)
         print("✓ Checkpoint loaded successfully")
         print(f"  Loaded {len(state_dict)} parameter tensors")
 

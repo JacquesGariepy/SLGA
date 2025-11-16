@@ -25,7 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.legacy.model import Config, LLMTransformer  # noqa: E402
+from src.models import SLGATransformer, Config  # noqa: E402
 from scripts.generate import load_checkpoint  # noqa: E402  pylint: disable=wrong-import-position
 
 
@@ -178,7 +178,7 @@ def load_model_and_tokenizer(
     config_path: Path,
     checkpoint_path: Path,
     device: str,
-) -> tuple[LLMTransformer, AutoTokenizer, Dict]:
+) -> tuple[SLGATransformer, AutoTokenizer, Dict]:
     with config_path.open("r", encoding="utf-8") as handle:
         cfg = yaml.safe_load(handle)
 
@@ -191,7 +191,7 @@ def load_model_and_tokenizer(
         tokenizer.pad_token = tokenizer.eos_token
 
     model_cfg = Config(**cfg["model"])
-    model = LLMTransformer(model_cfg)
+    model = SLGATransformer(model_cfg)
     model, _ = load_checkpoint(str(checkpoint_path), model)
     model = model.to(device)
     model.eval()
@@ -224,7 +224,7 @@ def build_combinations(args: argparse.Namespace) -> List[SamplingCombo]:
 
 
 def generate_once(
-    model: LLMTransformer,
+    model: SLGATransformer,
     tokenizer: AutoTokenizer,
     prompt: str,
     combo: SamplingCombo,
@@ -315,7 +315,7 @@ def score_metrics(metrics: Dict[str, float]) -> float:
 
 
 def evaluate_combinations(
-    model: LLMTransformer,
+    model: SLGATransformer,
     tokenizer: AutoTokenizer,
     prompts: Iterable[str],
     combos: List[SamplingCombo],

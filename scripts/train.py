@@ -17,7 +17,7 @@ from torch.utils.tensorboard import SummaryWriter
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from accelerate import Accelerator
-from src.legacy.model import Config, LLMTransformer
+from src.models import SLGATransformer, Config
 from scripts.utils import set_seed
 from src.training import (
     SLGATrainer,
@@ -97,7 +97,7 @@ def main():
     if "grad_checkpointing" in cfg["train"]:
         model_cfg.grad_checkpointing = cfg["train"]["grad_checkpointing"]
 
-    model = LLMTransformer(model_cfg)
+    model = SLGATransformer(model_cfg)
 
     if accelerator.is_main_process:
         print(f"Model parameters: {model.get_num_params() / 1e6:.2f}M")

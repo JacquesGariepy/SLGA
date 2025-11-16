@@ -13,7 +13,7 @@ import os
 # Add project root to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.legacy.model import LLMTransformer, Config
+from src.models import SLGATransformer, Config
 from transformers import GPT2Tokenizer
 
 
@@ -60,7 +60,7 @@ def test_checkpoint(checkpoint_path, verbose=True):
     
     # Create model from YOUR custom architecture
     model_cfg = Config(**cfg["model"])
-    model = LLMTransformer(model_cfg)
+    model = SLGATransformer(model_cfg)
     
     # Load checkpoint using custom load_checkpoint function
     try:

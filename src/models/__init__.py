@@ -16,7 +16,11 @@ from src.models.slga_model import (
     SLGATransformer,
 )
 
+# Backward compatibility alias
+Config = ModelConfig
+
 __all__ = [
+    "Config",  # Backward compatibility alias for ModelConfig
     "PRESET_CONFIGS",
     "GenerationState",
     "ModelConfig",
