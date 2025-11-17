@@ -88,7 +88,7 @@ class SLGAModule(nn.Module):
         self._mask_cache = {}
 
         # Unified QKV projection (used for main flow AND global cache)
-        self.qkv_proj = nn.Linear(self.D, 3 * self.D, bias=False)
+        self.qkv_proj = nn.Linear(self.D, 3 * self.D, bias=True)
         self.out_proj = nn.Linear(self.D, self.D, bias=False)
         
         self.attn_drop = nn.Dropout(attn_drop)
