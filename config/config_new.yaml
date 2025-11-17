@@ -1,0 +1,42 @@
+seed: 1234
+
+model:
+  vocab_size: null                  # Auto-set par tokenizer
+  max_seq_len: 131072
+  embed_dim: 512
+  num_heads: 8
+  n_layers: 12
+  dropout_rate: 0.1
+  local_window: 128
+  global_k: 24
+  gated_fusion: true
+  learned_landmarks: true
+  dilated_windows: true
+  diverse_topk: true
+
+train:
+  seq_len_start: 384
+  seq_len_final: 2048
+  seq_len_warmup_steps: 15000
+  batch_size: 6
+  accum_steps: 8
+  lr: 1.5e-4
+  warmup_steps: 5000
+  max_steps: 200000
+  grad_clip: 1.0
+  amp: true
+  amp_dtype: "bf16"
+  lambda_spacing: 200.0
+  lambda_sparsity: 2.0
+  scorer_lr_multiplier: 5.0
+  global_warmup_start: 3000
+  global_warmup_end: 8000
+
+tokenizer: "meta-llama/Meta-Llama-3-8B"   # ← 128k vocab, meilleur tout
+
+save:
+  out_dir: "out_slga_128k"
+
+log:
+  tensorboard: true
+  wandb: true
