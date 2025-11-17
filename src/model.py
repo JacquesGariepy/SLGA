@@ -25,16 +25,14 @@ from .landmarks import LearnableLandmarkSelector
 
 @dataclass
 class Config:
-    """Configuration du modèle SLGA"""
-    vocab_size: int = 50257
-    max_seq_len: int = 2048
+    vocab_size: int = 128256          # LLaMA-3 vocab
+    max_seq_len: int = 131072         # RoPE 128k
     embed_dim: int = 512
     num_heads: int = 8
     ff_hidden_multiplier: int = 4
     n_layers: int = 12
     dropout_rate: float = 0.1
 
-    # SLGA config
     local_window: int = 128
     global_k: int = 24
     gated_fusion: bool = True
@@ -42,12 +40,53 @@ class Config:
     dilated_windows: bool = True
     diverse_topk: bool = True
 
-    # Landmark selector config (v1.1) - optional, ignored if None
     landmark_selector: Optional[Dict[str, Any]] = None
+    grad_checkpointing: bool = False  # Dynamique maintenant
 
-    # Training config
-    grad_checkpointing: bool = False
+# ====================== RMSNorm ======================
+class RMSNorm(nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
 
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weightc
+
+# ====================== RoPE ======================
+class RotaryEmbedding(nn.Module):
+    def __init__(self, dim: int, max_seq_len: int = 131072, theta: float = 10000.0):
+        super().__init__()
+        inv_freq = 1.0 / (theta ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        self.max_seq_len = max_seq_len
+        self.cached_freqs = None
+
+    def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
+        # x: (B, L, H, Dh) or (B, L, D)
+        if x.dim() == 4:  # (B, H, L, Dh)
+            seq_len = x.size(2)
+        else:
+            seq_len = x.size(1)
+
+        if self.cached_freqs is None or self.cached_freqs.size(0) < seq_len:
+            t = torch.arange(seq_len, device=x.device, dtype=torch.float32)
+            freqs = torch.einsum("i,j->ij", t, self.inv_freq.to(x.device))
+            emb = torch.cat((freqs, freqs), dim=-1)  # (seq_len, dim)
+            self.register_buffer("cached_cos", emb.cos(), persistent=False)
+            self.register_buffer("cached_sin", emb.sin(), persistent=False)
+        cos = self.cached_cos[:seq_len]
+        sin = self.cached_sin[:seq_len]
+
+        if x.dim() == 4:
+            x1, x2 = x[..., : x.shape[-1]//2], x[..., x.shape[-1]//2 :]
+            x_rot = torch.cat((-x2, x1), dim=-1)
+            x_out = x * cos + x_rot * sin
+        else:
+            x1, x2 = x[..., : x.shape[-1]//2], x[..., x.shape[-1]//2 :]
+            x_rot = torch.cat((-x2, x1), dim=-1)
+            x_out = x * cos.unsqueeze(0) + x_rot * sin.unsqueeze(0)
+        return x_out.float()
 
 class FeedForward(nn.Module):
     """
@@ -59,9 +98,9 @@ class FeedForward(nn.Module):
         # Hidden layer dimension is typically 4x the embedding dimension
         hidden_dim = embed_dim * hidden_multiplier
         # First linear layer projects from embedding dimension to hidden dimension
-        self.fc1 = nn.Linear(embed_dim, hidden_dim)
+        self.fc1 = nn.Linear(embed_dim, hidden_dim, bias=False)
         # Second linear layer projects back to embedding dimension
-        self.fc2 = nn.Linear(hidden_dim, embed_dim)
+        self.fc2 = nn.Linear(hidden_dim, embed_dim, bias=False)
         # Dropout for regularization
         self.dropout = nn.Dropout(dropout)
 
@@ -85,30 +124,16 @@ class FeedForward(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    """
-    Transformer Block with SLGA (Sparse Local-Global Attention).
-    
-    Architecture: Pre-norm (LayerNorm before attention/FFN).
-    Each block consists of SLGA attention followed by a Feed-Forward Network (FFN),
-    with residual connections around each sub-layer.
-    Supports progressive dilation across layers for hierarchical processing.
-    """
-    
     def __init__(self, cfg: Config, layer_idx: int):
         super().__init__()
-        
         self.cfg = cfg
         self.layer_idx = layer_idx
-        
-        # Progressive dilation per layer if enabled
-        # Lower layers: dense, higher layers: dilated for hierarchical processing
+
         if cfg.dilated_windows:
             dilation_factor = 2 ** (layer_idx // max(1, cfg.n_layers // 3))
         else:
             dilation_factor = 1
-        
-        # SLGA Attention module
-        # Handles sparse attention with local windows and global landmarks
+
         self.attn = SLGAModule(
             embed_dim=cfg.embed_dim,
             num_heads=cfg.num_heads,
@@ -116,228 +141,108 @@ class TransformerBlock(nn.Module):
             global_k=cfg.global_k,
             attn_drop=cfg.dropout_rate,
             proj_drop=cfg.dropout_rate,
-            causal=True,  # Causal attention for autoregressive generation
-            gated_fusion=cfg.gated_fusion,  # Gated fusion of local and global attention
-            dilation=dilation_factor,  # Dilation factor for this layer
-            diverse_topk=cfg.diverse_topk,  # Diverse top-k selection for global tokens
+            causal=True,
+            gated_fusion=cfg.gated_fusion,
+            dilation=dilation_factor,
+            diverse_topk=cfg.diverse_topk,
         )
-        
-        # Feed-Forward Network (FFN)
-        self.ffn = FeedForward(
-            cfg.embed_dim,
-            cfg.ff_hidden_multiplier,
-            cfg.dropout_rate,
-        )
-        
-        # Layer norms (pre-norm architecture)
-        # Applied before attention and FFN for better gradient flow
-        self.norm1 = nn.LayerNorm(cfg.embed_dim)
-        self.norm2 = nn.LayerNorm(cfg.embed_dim)
-    
-    def _attn_forward(self, x: torch.Tensor, cache_global: Optional[torch.Tensor], global_weight: float = 1.0) -> torch.Tensor:
-        """Wrapper for attention forward pass (used with gradient checkpointing)"""
-        return self.attn(x, cache_global=cache_global, global_weight=global_weight)
-    
-    def _ffn_forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Wrapper for FFN forward pass (used with gradient checkpointing)"""
-        return self.ffn(x)
-    
-    def forward(
-        self,
-        x: torch.Tensor,
-        cache_global: Optional[torch.Tensor] = None,
-        global_weight: float = 1.0,
-    ) -> torch.Tensor:
-        """
-        Forward pass through the Transformer block.
-        
-        Args:
-            x: Input tensor of shape (batch, seq_len, embed_dim)
-            cache_global: Global landmark states of shape (batch, global_k, embed_dim)
-            global_weight: Weight for global attention component (0.0 to 1.0)
-        
-        Returns:
-            Output tensor of shape (batch, seq_len, embed_dim)
-        """
-        # Attention with residual connection (pre-norm)
-        # Use gradient checkpointing during training to save memory
+
+        self.ffn = FeedForward(cfg.embed_dim, cfg.ff_hidden_multiplier, cfg.dropout_rate)
+        self.norm1 = RMSNorm(cfg.embed_dim)
+        self.norm2 = RMSNorm(cfg.embed_dim)
+
+    def forward(self, x: torch.Tensor, cache_global: Optional[torch.Tensor] = None, global_weight: float = 1.0):
         if self.cfg.grad_checkpointing and self.training:
-            attn_out = checkpoint(self._attn_forward, self.norm1(x), cache_global, global_weight, use_reentrant=False)
+            attn_out = checkpoint(self.attn, self.norm1(x), cache_global, global_weight, use_reentrant=False)
         else:
             attn_out = self.attn(self.norm1(x), cache_global=cache_global, global_weight=global_weight)
-        
-        # Add residual connection
         x = x + attn_out
-        
-        # FFN with residual connection (pre-norm)
+
         if self.cfg.grad_checkpointing and self.training:
-            ffn_out = checkpoint(self._ffn_forward, self.norm2(x), use_reentrant=False)
+            ffn_out = checkpoint(self.ffn, self.norm2(x), use_reentrant=False)
         else:
             ffn_out = self.ffn(self.norm2(x))
-        
-        # Add residual connection
         x = x + ffn_out
-        
         return x
-
-
+        
 class LLMTransformer(nn.Module):
-    """
-    Complete Causal Transformer LLM with SLGA (Sparse Local-Global Attention).
-    
-    Architecture Overview:
-    1. Token + Position Embeddings
-    2. N × TransformerBlock (SLGA Attention + FFN)
-    3. Final LayerNorm
-    4. LM Head (projection to vocabulary)
-    
-    Features:
-    - Learned landmarks (optional) via LearnableLandmarkSelector
-    - Heuristic landmarks via cache_global_ids
-    - Autoregressive generation with advanced sampling controls
-    - Gradient checkpointing for memory efficiency
-    - KV-cache support for generation
-    """
-    
     def __init__(self, cfg: Config):
         super().__init__()
-        
         self.cfg = cfg
-        
-        # Token and position embeddings
-        # Token embeddings map input IDs to embedding vectors
+
         self.token_emb = nn.Embedding(cfg.vocab_size, cfg.embed_dim)
-        # Position embeddings add positional information
-        self.pos_emb = nn.Embedding(cfg.max_seq_len, cfg.embed_dim)
-        # Dropout on embeddings for regularization
+        self.rope = RotaryEmbedding(cfg.embed_dim // cfg.num_heads)
         self.emb_dropout = nn.Dropout(cfg.dropout_rate)
-        
-        # Landmark selector (if learned landmarks are enabled)
-        # Learns to select important global tokens dynamically
+
         if cfg.learned_landmarks:
             self.landmark_selector = LearnableLandmarkSelector(
                 embed_dim=cfg.embed_dim,
-                num_landmarks=cfg.global_k * 2,  # Select more, restrict to top-K in SLGA
+                num_landmarks=cfg.global_k * 2,
             )
         else:
             self.landmark_selector = None
-        
-        # Stack of Transformer blocks
-        # Each block contains SLGA attention and FFN with progressive dilation
-        self.blocks = nn.ModuleList([
-            TransformerBlock(cfg, layer_idx=i) for i in range(cfg.n_layers)
-        ])
-        
-        # Final layer norm and language model head
-        # Final norm stabilizes output before projection
-        self.final_norm = nn.LayerNorm(cfg.embed_dim)
-        # LM head projects to vocabulary logits
+
+        self.blocks = nn.ModuleList([TransformerBlock(cfg, i) for i in range(cfg.n_layers)])
+        self.final_norm = RMSNorm(cfg.embed_dim)
         self.lm_head = nn.Linear(cfg.embed_dim, cfg.vocab_size, bias=False)
-        
-        # Tie embeddings: share weights between token_emb and lm_head
-        # This reduces parameters and improves performance
         self.lm_head.weight = self.token_emb.weight
-        
-        # Initialize weights using GPT-2 style initialization
+
         self.apply(self._init_weights)
-    
+
     def _init_weights(self, module: nn.Module):
-        """GPT-2 style weight initialization for stable training"""
         if isinstance(module, nn.Linear):
-            # Normal initialization for linear layers
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
-            # Normal initialization for embeddings
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-        elif isinstance(module, nn.LayerNorm):
-            # Standard initialization for layer norms
-            torch.nn.init.ones_(module.weight)
-            torch.nn.init.zeros_(module.bias)
-    
-    def forward(
-        self,
-        input_ids: torch.Tensor,
-        cache_global_ids: Optional[torch.Tensor] = None,
-        return_aux: bool = False,
-        global_weight: float = 1.0,
-    ) -> torch.Tensor | Tuple[torch.Tensor, Dict[str, Any]]:
-        """
-        Forward pass through the complete transformer model.
-        
-        Args:
-            input_ids: Input token IDs of shape (batch, seq_len)
-            cache_global_ids: Heuristic landmark indices of shape (batch, global_k)
-            return_aux: If True, return auxiliary metrics (landmark scores, indices, gate values)
-            global_weight: Weight for global attention component (0.0 to 1.0)
-        
-        Returns:
-            logits: Output logits of shape (batch, seq_len, vocab_size)
-            aux: Optional auxiliary data dictionary
-        """
+
+    def apply_rope(self, x: torch.Tensor, position_ids: torch.Tensor):
+        qkv = x.unflatten(-1, (3, self.cfg.embed_dim)).transpose(1, 2)  # simplifié pour SLGA
+        return self.rope(qkv, position_ids).flatten(-2).transpose(1, 2)
+
+    def forward(self, input_ids: torch.Tensor, cache_global_ids=None, return_aux=False, global_weight=1.0):
         B, L = input_ids.shape
         device = input_ids.device
 
-        # Compute token and position embeddings
-        tok_emb = self.token_emb(input_ids)  # (B, L, D)
-        pos = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
-        pos_emb = self.pos_emb(pos)  # (B, L, D)
-        x = self.emb_dropout(tok_emb + pos_emb)  # (B, L, D)
+        x = self.token_emb(input_ids)
+        position_ids = torch.arange(L, device=device).unsqueeze(0).expand(B, -1)
+        x = self.rope(x, position_ids)
+        x = self.emb_dropout(x)
 
-        # Initial landmark selection
+        # Landmark selection (inchangé)
         landmark_indices = None
         landmark_scores = None
-
         if self.landmark_selector is not None:
-            # Learned landmarks: select indices once using Gumbel-Softmax during training
-            landmark_indices, _, landmark_scores = self.landmark_selector(x, use_gumbel=self.training)
-            # landmark_indices: (B, G)
+            landmark_indices, _, landmark_scores = self.landmark_selector(x, use_gembel=self.training)
         elif cache_global_ids is not None:
-            # Heuristic landmarks: use provided indices
-            landmark_indices = cache_global_ids  # (B, G)
+            landmark_indices = cache_global_ids
 
-        # Pass through transformer blocks
-        # Update landmarks at each layer so they evolve with the sequence
-        gate_values_layers: list[torch.Tensor] = []
-
+        gate_values_layers = []
         for block in self.blocks:
-            # Extract current landmark states from updated embeddings
             if landmark_indices is not None:
                 B_cur, L_cur, D = x.shape
                 G = landmark_indices.size(1)
-                # Clamp indices to avoid out-of-bounds (can happen with truncation or selection errors)
-                landmark_indices_safe = torch.clamp(landmark_indices, 0, L_cur - 1)
-                landmark_indices_exp = landmark_indices_safe.unsqueeze(-1).expand(B_cur, G, D)
-                landmark_states = torch.gather(x, dim=1, index=landmark_indices_exp)  # (B, G, D)
+                idx_safe = torch.clamp(landmark_indices, 0, L_cur - 1)
+                idx_exp = idx_safe.unsqueeze(-1).expand(B_cur, G, D)
+                landmark_states = torch.gather(x, dim=1, index=idx_exp)
             else:
                 landmark_states = None
 
-            # Forward pass through block with updated landmarks
             x = block(x, cache_global=landmark_states, global_weight=global_weight)
-
-            # Collect gating metrics if available (for monitoring attention behavior)
             monitor = getattr(block.attn, "last_monitor", None)
             if monitor and monitor.get("gate_scalar") is not None:
                 gate_values_layers.append(monitor["gate_scalar"])
-        
-        # Final normalization and language model projection
+
         x = self.final_norm(x)
-        logits = self.lm_head(x)  # (B, L, V)
-        
+        logits = self.lm_head(x)
+
         if return_aux:
-            aux = {
-                "landmark_scores": landmark_scores,  # Softmax scores (B, L)
-                "landmark_indices": landmark_indices,  # Selected indices (B, G)
-            }
-
+            aux = {"landmark_indices": landmark_indices, "landmark_scores": landmark_scores}
             if gate_values_layers:
-                gate_stack = torch.stack(gate_values_layers, dim=0)  # (layers, B, H, L)
-                aux["gate_values"] = gate_stack.detach()
-
+                aux["gate_values"] = torch.stack(gate_values_layers, dim=0).detach()
             return logits, aux
-        else:
-            return logits
+        return logits
     
     @torch.no_grad()
     def generate(
@@ -527,11 +432,8 @@ class LLMTransformer(nn.Module):
         return input_ids
     
     def get_num_params(self, non_embedding: bool = True) -> int:
-        """Count the number of model parameters"""
         n_params = sum(p.numel() for p in self.parameters())
         if non_embedding:
-            # Exclude embedding parameters (often not counted in model size)
-            n_params -= self.pos_emb.weight.numel()
             n_params -= self.token_emb.weight.numel()
         return n_params
     
@@ -572,4 +474,4 @@ class LLMTransformer(nn.Module):
         mfu = flops_per_sec / peak_flops
         return mfu
 
-__all__ = ["Config", "LLMTransformer", "TransformerBlock", "FeedForward"]
+__all__ = ["Config", "LLMTransformer", "TransformerBlock", "FeedForward", "RMSNorm"]
