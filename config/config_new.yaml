@@ -1,12 +1,16 @@
 seed: 1234
+# device: cuda  # déjà géré automatiquement par Accelerator
 
 model:
-  vocab_size: null                  # Auto-set par tokenizer
-  max_seq_len: 131072
+  vocab_size: null                  # Auto-set par le tokenizer (128256 pour LLaMA-3)
+  max_seq_len: 131072               # RoPE 128k context
   embed_dim: 512
   num_heads: 8
+  ff_hidden_multiplier: 4
   n_layers: 12
   dropout_rate: 0.1
+
+  # SLGA config
   local_window: 128
   global_k: 24
   gated_fusion: true
@@ -15,28 +19,64 @@ model:
   diverse_topk: true
 
 train:
+  # Curriculum progressif
   seq_len_start: 384
+  seq_len_mid: 1024
   seq_len_final: 2048
   seq_len_warmup_steps: 15000
-  batch_size: 6
+
+  # Setup GPU 3090/4090 → 8×H100 cloud
+  batch_size: 6                     # 6×8 = 48 effective (ajuste à 8×8 ou plus sur H100)
   accum_steps: 8
   lr: 1.5e-4
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  weight_decay: 0.1
   warmup_steps: 5000
-  max_steps: 200000
+  max_steps: 600000                 # 600k steps → ~600B-800B tokens selon dataset
   grad_clip: 1.0
+
   amp: true
   amp_dtype: "bf16"
+  grad_checkpointing: false         # maintenant géré dynamiquement dans train.py (>1024)
+
+  # Aux loss landmarks
   lambda_spacing: 200.0
   lambda_sparsity: 2.0
+  lambda_diversity: 0.0
   scorer_lr_multiplier: 5.0
+
+  # Global warmup progressif
   global_warmup_start: 3000
   global_warmup_end: 8000
 
-tokenizer: "meta-llama/Meta-Llama-3-8B"   # ← 128k vocab, meilleur tout
+  # Sauvegarde / éval
+  save_every: 1000
+  keep_last_checkpoints: 20
+  eval_every: 750
+  log_every: 50
+  debug_checkpoints: false
+
+data:
+  dataset: "wikimedia/wikipedia"
+  subset: "20231101.en"
+  split_train: "train[:95%]"
+  split_val: "train[95%:]"
+  # Pour le run final, tu remplaceras par :
+  # dataset: "HuggingFaceFW/fineweb-edu"
+  # subset: "score>=4.0"
+  num_workers: 4
+  max_train_samples: null
+  max_val_samples: 10000            # validation rapide
+
+tokenizer: "meta-llama/Meta-Llama-3-8B"   # 128k vocab – le meilleur en 2025
 
 save:
   out_dir: "out_slga_128k"
 
 log:
-  tensorboard: true
   wandb: true
+  project: "slga-128k"
+  run_name: null                    # auto-généré
+  tensorboard: true
+  system_info_every: 500
