@@ -44,6 +44,10 @@ from src.monitoring import compute_long_dependency_recall
 
 from torch.utils.tensorboard import SummaryWriter
 
+def update_checkpointing(model: LLMTransformer, seq_len: int):
+    model.cfg.grad_checkpointing = (seq_len > 1024)
+    for block in model.blocks:
+        block.cfg.grad_checkpointing = model.cfg.grad_checkpointing
 
 def _unwrap_scheduler(scheduler: Optional[_LRScheduler]) -> Optional[_LRScheduler]:
     """
@@ -818,7 +822,7 @@ def main():
     # Two different step counters are used in training:
     #
     # 1. `step` = Forward pass counter (0 → max_steps)
-    #    - Increments on EVERY forward pass
+    #    - Increments on EVERY  pass
     #    - Used for: logging, checkpointing, curriculum, warmup schedules
     #    - With accum_steps=4: 0, 1, 2, 3, 4, 5, ..., 100000
     #
@@ -828,10 +832,10 @@ def main():
     #    - With accum_steps=4: 0, 0, 0, 0, 1, 1, 1, 1, 2, ..., 25000
     #
     # Config file interpretation:
-    #   - max_steps: 100000      → 100K forward passes = 25K optimizer updates (with accum=4)
-    #   - warmup_steps: 2000     → 2000 forward passes = 500 optimizer updates (with accum=4)
+    #   - max_steps: 100000      → 100K  passes = 25K optimizer updates (with accum=4)
+    #   - warmup_steps: 2000     → 2000  passes = 500 optimizer updates (with accum=4)
     #
-    # Scheduler must use OPTIMIZER steps (not forward passes):
+    # Scheduler must use OPTIMIZER steps (not  passes):
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_warmup_steps=warmup_steps // accum_steps,    # 2000 → 500 (with accum=4)
@@ -983,6 +987,12 @@ def main():
             # Curriculum sequence length (update collator if needed)
             current_seq_len = get_current_seq_len(step, cfg)
             
+            # === NOUVEAU : checkpointing dynamique ===
+            model.cfg.grad_checkpointing = (current_seq_len > 1024)
+            for block in model.blocks:
+                block.cfg.grad_checkpointing = model.cfg.grad_checkpointing
+            # =========================================
+
             # Global warmup weight
             global_weight = get_global_warmup_weight(step, cfg)
             
