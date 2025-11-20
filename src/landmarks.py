@@ -136,23 +136,6 @@ class LearnableLandmarkSelector(nn.Module):
 
         Forward: Hard top-K (one-hot)
         Backward: Gradient via sigmoid soft-thresholding (consistent with forward)
-
-        Advantages vs previous version:
-        - More stable gradients (soft selection vs hard scores)
-        - Better forward/backward consistency
-        - Temperature controls "sharpness" of soft selection
-
-        Args:
-            scores: (B, L) raw importance scores
-            k: Number of elements to select
-
-        Returns:
-            selection: (B, L) selection weights (forward=hard, backward=soft)
-            topk_indices: (B, k) hard indices of top-k
-
-        Notes:
-            - Temperature=0.1 makes soft selection close to hard (but differentiable)
-            - Threshold based on k-th score (adaptive automatically)
         """
         B, L = scores.shape
 
@@ -193,34 +176,6 @@ class LearnableLandmarkSelector(nn.Module):
             landmark_indices: (B, G) indices of selected landmarks
             landmark_states: (B, G, D) corresponding states (gathered)
             selection_scores: (B, L) selection scores for auxiliary loss
-
-        Notes:
-            💡 RECOMMENDATION: use_gumbel=True is preferable for training!
-
-            Method comparison:
-            ┌─────────────────┬──────────────────┬────────────────┬──────────────┐
-            │ Method          │ Gradients        │ Convergence    │ Stability    │
-            ├─────────────────┼──────────────────┼────────────────┼──────────────┤
-            │ Gumbel-Softmax  │ Smooth & continu │ More stable    │ ⭐⭐⭐⭐⭐ │
-            │ (use_gumbel=T)  │ Temperature decay│ Converge better│              │
-            ├─────────────────┼──────────────────┼────────────────┼──────────────┤
-            │ Straight-through│ Approximative    │ Faster         │ ⭐⭐⭐      │
-            │ (use_gumbel=F)  │ Sigmoid-based    │ Less stable    │              │
-            └─────────────────┴──────────────────┴────────────────┴──────────────┘
-
-            Why Gumbel is better:
-            1. Theoretically grounded gradients (continuous relaxation of argmax)
-            2. Temperature annealing → converges to hard selection progressively
-            3. Used in Sparse Transformer, DALL-E, and other SOTA models
-
-            When to use straight-through:
-            - Quick prototyping (no need to tune temperature)
-            - Limited resources (slight speed gain ~5-10%)
-            - Short fine-tuning where approximate gradients suffice
-
-            WARNING: Straight-through can cause unstable gradients early in
-            training because the adaptive threshold moves a lot when scores are uncalibrated.
-            → Use Gumbel for from-scratch training, straight-through for fine-tuning.
         """
         B, L, D = x.shape
 
@@ -387,9 +342,7 @@ def landmark_spacing_loss(
     selection_scores: Optional[torch.Tensor] = None
 ) -> torch.Tensor:
     """
-    Optimization #2: Penalizes non-uniform gaps between landmarks.
-
-    Fix: Differentiable version that uses selection_scores for gradients!
+    Penalizes non-uniform gaps between landmarks.
 
     Encourages uniform spacing of landmarks in the sequence to maximize
     spatial coverage and avoid clustering of nearby landmarks.
@@ -517,7 +470,7 @@ def landmark_sparsity_loss(
     lambda_reg: float = 0.001
 ) -> torch.Tensor:
     """
-    Correct version v4: Measures concentration via proportion of "mass" in top-G.
+    Measures concentration via proportion of "mass" in top-G.
 
     Penalizes if scores are too dispersed, i.e., if the "mass"
     (sum of positive scores) is NOT sufficiently concentrated in the top-G.
@@ -527,14 +480,6 @@ def landmark_sparsity_loss(
         2. Calculate proportion of mass in top-G
         3. Target: at least 80% of mass should be in top-G
         4. Penalize if proportion < target
-
-    Problem solved:
-        Previous versions: Gap or count gave loss=0 always
-
-        Version v4: Proportion of mass
-        → If well concentrated: top-G contains 90%+ mass → loss=0
-        → If dispersed: top-G contains 60% mass → loss>0
-        → Direct and intuitive measure of concentration
 
     Args:
         selection_scores: (B, L) raw selection scores (unnormalized)
@@ -580,11 +525,5 @@ def landmark_sparsity_loss(
     # 5. Penalize if insufficient mass in top-G
     # More dispersed mass = higher loss
     loss = lambda_reg * F.relu(target_mass - mass_in_top_g)
-
-    # Return mass_in_top_g for logging (optional)
-    # Allows monitoring evolution even if loss constant early
-    # Usage: loss, mass = landmark_sparsity_loss(..., return_mass=True)
-    # Note: For backward compatibility, return just loss by default
-    # Caller can extract mass_in_top_g by re-running calculation if needed
 
     return loss

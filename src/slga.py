@@ -1,6 +1,6 @@
 # slga.py
 """
-Sparse Local-Global Attention Module (SLGA) - Version Corrigée et Optimisée
+Sparse Local-Global Attention Module (SLGA)
 
 Améliorations incluses:
 - Fenêtrage local sans biais de clamping

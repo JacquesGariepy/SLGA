@@ -35,6 +35,8 @@ def save_checkpoint(
     step: int,
     accelerator: Any,
     keep_last_n: int = None,
+    extra_state: dict = None,
+    custom_dir: str = None,
 ):
     """
     Sauvegarde un checkpoint du modèle et de l'état d'entraînement.
@@ -47,8 +49,12 @@ def save_checkpoint(
         step: Numéro d'étape actuel
         accelerator: Accelerator (pour unwrap)
         keep_last_n: Si spécifié, garde seulement les N derniers checkpoints (rotation)
+        extra_state: Dictionnaire d'état supplémentaire à sauvegarder (optionnel)
+        custom_dir: Nom de répertoire personnalisé au lieu de ckpt_{step} (optionnel)
     """
-    checkpoint_dir = os.path.join(out_dir, f"ckpt_{step}")
+    # Use custom directory name if provided, otherwise use default
+    dir_name = custom_dir if custom_dir else f"ckpt_{step}"
+    checkpoint_dir = os.path.join(out_dir, dir_name)
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     # Unwrap model (si DDP/FSDP)
@@ -73,6 +79,10 @@ def save_checkpoint(
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict() if scheduler else None,
     }
+
+    # Add extra state if provided
+    if extra_state is not None:
+        training_state.update(extra_state)
 
     torch.save(
         training_state,
@@ -102,6 +112,7 @@ def load_checkpoint(
     optimizer: torch.optim.Optimizer = None,
     scheduler: Any = None,
     device: str = "cuda",
+    extra_state: dict = None,
 ) -> int:
     """
     Charge un checkpoint.
@@ -112,6 +123,7 @@ def load_checkpoint(
         optimizer: Optimizer (optionnel)
         scheduler: Scheduler (optionnel)
         device: Device
+        extra_state: Dictionnaire pour stocker l'état supplémentaire chargé (optionnel, modifié in-place)
 
     Returns:
         step: Numéro d'étape du checkpoint
@@ -145,6 +157,17 @@ def load_checkpoint(
         if scheduler and "scheduler" in trainer_state and trainer_state["scheduler"]:
             scheduler.load_state_dict(trainer_state["scheduler"])
             print(f"[✓] Scheduler state loaded")
+
+        # Load extra state if requested
+        if extra_state is not None:
+            # Copy all extra keys (not optimizer, scheduler, step) to extra_state dict
+            reserved_keys = {"optimizer", "scheduler", "step"}
+            for key, value in trainer_state.items():
+                if key not in reserved_keys:
+                    extra_state[key] = value
+
+            if extra_state:
+                print(f"[✓] Extra state loaded: {list(extra_state.keys())}")
 
     print(f"[✓] Checkpoint loaded (step {step})")
 

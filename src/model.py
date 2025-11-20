@@ -1,4 +1,3 @@
-# model.py
 """
 Transformer LLM avec Sparse Local-Global Attention (SLGA)
 
@@ -12,20 +11,25 @@ Architecture complète intégrant:
 
 from __future__ import annotations
 import math
+from dataclasses import dataclass
+from typing import Optional, Tuple, Dict, Any
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from dataclasses import dataclass
-from typing import Optional, Tuple, Dict, Any
 from torch.utils.checkpoint import checkpoint
 
 from .slga import SLGAModule
 from .landmarks import LearnableLandmarkSelector
 
 
+# ======================================================================
+# Config
+# ======================================================================
+
 @dataclass
 class Config:
-    vocab_size: int = 128256          # LLaMA-3 vocab
+    vocab_size: int = 128256          # LLaMA 3 vocab
     max_seq_len: int = 131072         # RoPE 128k
     embed_dim: int = 512
     num_heads: int = 8
@@ -41,9 +45,13 @@ class Config:
     diverse_topk: bool = True
 
     landmark_selector: Optional[Dict[str, Any]] = None
-    grad_checkpointing: bool = False  # Dynamique maintenant
+    grad_checkpointing: bool = False  # dynamique
 
-# ====================== RMSNorm ======================
+
+# ======================================================================
+# RMSNorm
+# ======================================================================
+
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()
@@ -51,77 +59,91 @@ class RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weightc
+        # x: (..., D)
+        norm = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        return x * norm * self.weight
 
-# ====================== RoPE ======================
+
+# ======================================================================
+# RoPE
+# ======================================================================
+
 class RotaryEmbedding(nn.Module):
+    """
+    RoPE appliqué sur un tenseur (B, L, D) avec D pair.
+    position_ids: (B, L) contenant les positions entières.
+    """
+
     def __init__(self, dim: int, max_seq_len: int = 131072, theta: float = 10000.0):
         super().__init__()
+        assert dim % 2 == 0, "RotaryEmbedding requiert une dimension paire"
+        self.dim = dim
+        self.max_seq_len = max_seq_len
+
         inv_freq = 1.0 / (theta ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
         self.register_buffer("inv_freq", inv_freq, persistent=False)
-        self.max_seq_len = max_seq_len
-        self.cached_freqs = None
+
+        # Précompute sur max_seq_len
+        t = torch.arange(max_seq_len, dtype=torch.float32)
+        freqs = torch.einsum("i,j->ij", t, self.inv_freq)  # (max_seq_len, dim/2)
+        emb = torch.cat((freqs, freqs), dim=-1)            # (max_seq_len, dim)
+        self.register_buffer("cos_cached", emb.cos(), persistent=False)
+        self.register_buffer("sin_cached", emb.sin(), persistent=False)
 
     def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
-        # x: (B, L, H, Dh) or (B, L, D)
-        if x.dim() == 4:  # (B, H, L, Dh)
-            seq_len = x.size(2)
-        else:
-            seq_len = x.size(1)
+        """
+        x: (B, L, D)
+        position_ids: (B, L) avec valeurs dans [0, max_seq_len)
+        """
+        assert x.dim() == 3, "RotaryEmbedding attend un tenseur (B, L, D)"
+        B, L, D = x.shape
+        assert D == self.dim, f"Dim RoPE incohérente: D={D}, attendu={self.dim}"
+        assert position_ids.shape == (B, L), "position_ids doit être (B, L)"
 
-        if self.cached_freqs is None or self.cached_freqs.size(0) < seq_len:
-            t = torch.arange(seq_len, device=x.device, dtype=torch.float32)
-            freqs = torch.einsum("i,j->ij", t, self.inv_freq.to(x.device))
-            emb = torch.cat((freqs, freqs), dim=-1)  # (seq_len, dim)
-            self.register_buffer("cached_cos", emb.cos(), persistent=False)
-            self.register_buffer("cached_sin", emb.sin(), persistent=False)
-        cos = self.cached_cos[:seq_len]
-        sin = self.cached_sin[:seq_len]
+        if position_ids.max() >= self.max_seq_len:
+            raise ValueError(
+                f"position_ids contient une position {int(position_ids.max().item())} "
+                f"supérieure à max_seq_len={self.max_seq_len}"
+            )
 
-        if x.dim() == 4:
-            x1, x2 = x[..., : x.shape[-1]//2], x[..., x.shape[-1]//2 :]
-            x_rot = torch.cat((-x2, x1), dim=-1)
-            x_out = x * cos + x_rot * sin
-        else:
-            x1, x2 = x[..., : x.shape[-1]//2], x[..., x.shape[-1]//2 :]
-            x_rot = torch.cat((-x2, x1), dim=-1)
-            x_out = x * cos.unsqueeze(0) + x_rot * sin.unsqueeze(0)
-        return x_out.float()
+        cos = self.cos_cached[position_ids]  # (B, L, D)
+        sin = self.sin_cached[position_ids]  # (B, L, D)
+
+        half = D // 2
+        x1, x2 = x[..., :half], x[..., half:]
+        x_rot = torch.cat((-x2, x1), dim=-1)
+
+        return x * cos + x_rot * sin
+
+
+# ======================================================================
+# Feed Forward
+# ======================================================================
 
 class FeedForward(nn.Module):
     """
-    Standard Feed-Forward Network (FFN) used in transformer blocks.
-    Consists of two linear layers with GELU activation and dropout.
+    Standard Feed-Forward Network (FFN) de transformer.
+    Deux linéaires avec GELU et dropout.
     """
+
     def __init__(self, embed_dim: int, hidden_multiplier: int = 4, dropout: float = 0.1):
         super().__init__()
-        # Hidden layer dimension is typically 4x the embedding dimension
         hidden_dim = embed_dim * hidden_multiplier
-        # First linear layer projects from embedding dimension to hidden dimension
         self.fc1 = nn.Linear(embed_dim, hidden_dim, bias=False)
-        # Second linear layer projects back to embedding dimension
         self.fc2 = nn.Linear(hidden_dim, embed_dim, bias=False)
-        # Dropout for regularization
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass for the FFN.
-        Args:
-            x: Input tensor of shape (batch, seq_len, embed_dim)
-        Returns:
-            Output tensor of shape (batch, seq_len, embed_dim)
-        """
-        # Project input to hidden dimension
         x = self.fc1(x)
-        # Apply GELU non-linearity
         x = F.gelu(x)
-        # Project back to embedding dimension
         x = self.fc2(x)
-        # Apply dropout
         x = self.dropout(x)
         return x
 
+
+# ======================================================================
+# Transformer Block
+# ======================================================================
 
 class TransformerBlock(nn.Module):
     def __init__(self, cfg: Config, layer_idx: int):
@@ -151,9 +173,20 @@ class TransformerBlock(nn.Module):
         self.norm1 = RMSNorm(cfg.embed_dim)
         self.norm2 = RMSNorm(cfg.embed_dim)
 
-    def forward(self, x: torch.Tensor, cache_global: Optional[torch.Tensor] = None, global_weight: float = 1.0):
+    def forward(
+        self,
+        x: torch.Tensor,
+        cache_global: Optional[torch.Tensor] = None,
+        global_weight: float = 1.0,
+    ) -> torch.Tensor:
         if self.cfg.grad_checkpointing and self.training:
-            attn_out = checkpoint(self.attn, self.norm1(x), cache_global, global_weight, use_reentrant=False)
+            attn_out = checkpoint(
+                self.attn,
+                self.norm1(x),
+                cache_global,
+                global_weight,
+                use_reentrant=False,
+            )
         else:
             attn_out = self.attn(self.norm1(x), cache_global=cache_global, global_weight=global_weight)
         x = x + attn_out
@@ -163,15 +196,22 @@ class TransformerBlock(nn.Module):
         else:
             ffn_out = self.ffn(self.norm2(x))
         x = x + ffn_out
+
         return x
-        
+
+
+# ======================================================================
+# LLM Transformer
+# ======================================================================
+
 class LLMTransformer(nn.Module):
     def __init__(self, cfg: Config):
         super().__init__()
         self.cfg = cfg
 
         self.token_emb = nn.Embedding(cfg.vocab_size, cfg.embed_dim)
-        self.rope = RotaryEmbedding(cfg.embed_dim // cfg.num_heads)
+        # RoPE sur la dimension d embedding complète
+        self.rope = RotaryEmbedding(cfg.embed_dim, max_seq_len=cfg.max_seq_len)
         self.emb_dropout = nn.Dropout(cfg.dropout_rate)
 
         if cfg.learned_landmarks:
@@ -189,6 +229,10 @@ class LLMTransformer(nn.Module):
 
         self.apply(self._init_weights)
 
+    # --------------------------------------------------------------
+    # Init
+    # --------------------------------------------------------------
+
     def _init_weights(self, module: nn.Module):
         if isinstance(module, nn.Linear):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
@@ -197,53 +241,144 @@ class LLMTransformer(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def apply_rope(self, x: torch.Tensor, position_ids: torch.Tensor):
-        qkv = x.unflatten(-1, (3, self.cfg.embed_dim)).transpose(1, 2)  # simplifié pour SLGA
-        return self.rope(qkv, position_ids).flatten(-2).transpose(1, 2)
+    # --------------------------------------------------------------
+    # RoPE helper pour QKV concat (facultatif)
+    # --------------------------------------------------------------
 
-    def forward(self, input_ids: torch.Tensor, cache_global_ids=None, return_aux=False, global_weight=1.0):
+    def apply_rope(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
+        """
+        Applique RoPE sur un tenseur QKV concaténé.
+
+        x: (B, L, 3 * D) avec D = cfg.embed_dim
+        position_ids: (B, L)
+        """
+        B, L, threeD = x.shape
+        D = self.cfg.embed_dim
+        assert threeD == 3 * D, f"Shape inattendue pour x dans apply_rope: {x.shape}, attendu 3*D"
+        assert position_ids.shape == (B, L), "position_ids doit être (B, L)"
+
+        qkv = x.view(B, L, 3, D)              # (B, L, 3, D)
+        qkv_flat = qkv.reshape(B * 3, L, D)   # (3B, L, D)
+
+        # On répète les positions pour les 3 canaux (Q, K, V)
+        pos_flat = position_ids.unsqueeze(2).expand(B, L, 3).reshape(B * 3, L)
+
+        qkv_rot = self.rope(qkv_flat, pos_flat)  # (3B, L, D)
+        return qkv_rot.reshape(B, L, 3 * D)
+
+    # --------------------------------------------------------------
+    # Forward
+    # --------------------------------------------------------------
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        cache_global_ids: Optional[torch.Tensor] = None,
+        return_aux: bool = False,
+        global_weight: float = 1.0,
+    ):
+        """
+        input_ids: (B, L) entiers dans [0, vocab_size)
+        cache_global_ids: (B, G) indices pour les landmarks optionnels
+        """
         B, L = input_ids.shape
         device = input_ids.device
 
-        x = self.token_emb(input_ids)
-        position_ids = torch.arange(L, device=device).unsqueeze(0).expand(B, -1)
-        x = self.rope(x, position_ids)
+        # Sanity check sur la plage des ids
+        min_id = int(input_ids.min().item())
+        max_id = int(input_ids.max().item())
+        assert min_id >= 0, f"input_ids contient des ids négatifs: min={min_id}"
+        assert max_id < self.cfg.vocab_size, (
+            f"input_ids contient des ids >= vocab_size: max={max_id}, vocab_size={self.cfg.vocab_size}\n"
+            f"💡 Fix: Ensure tokenizer vocab_size matches model. Use len(tokenizer) instead of tokenizer.vocab_size.\n"
+            f"   Some tokenizers (e.g., Qwen2) have special tokens that extend beyond vocab_size."
+        )
+
+        # Embedding
+        x = self.token_emb(input_ids)  # (B, L, D)
+
+        # Positions RoPE
+        position_ids = torch.arange(L, device=device, dtype=torch.long).unsqueeze(0).expand(B, -1)
+        x = self.rope(x, position_ids)  # (B, L, D)
         x = self.emb_dropout(x)
 
-        # Landmark selection (inchangé)
+        # Landmarks
         landmark_indices = None
         landmark_scores = None
+
         if self.landmark_selector is not None:
-            landmark_indices, _, landmark_scores = self.landmark_selector(x, use_gembel=self.training)
+            landmark_indices, _, landmark_scores = self.landmark_selector(x, use_gumbel=self.training)
+
+            # Nettoyage agressif
+            L_cur = x.size(1)
+            landmark_indices = landmark_indices.nan_to_num_(nan=0.0)
+            landmark_indices = landmark_indices.clamp_(0, L_cur - 1)
+            landmark_indices = landmark_indices.long()
+
+            min_l = int(landmark_indices.min().item())
+            max_l = int(landmark_indices.max().item())
+            assert 0 <= min_l <= max_l < L_cur, (
+                f"landmark_indices hors bornes: [{min_l}, {max_l}] vs L_cur={L_cur}"
+            )
+
         elif cache_global_ids is not None:
+            # Landmarks fournis par l utilisateur ou le cache
             landmark_indices = cache_global_ids
+            L_cur = x.size(1)
+            landmark_indices = landmark_indices.clamp(0, L_cur - 1).long()
+
+            min_l = int(landmark_indices.min().item())
+            max_l = int(landmark_indices.max().item())
+            assert 0 <= min_l <= max_l < L_cur, (
+                f"cache_global_ids hors bornes: [{min_l}, {max_l}] vs L_cur={L_cur}"
+            )
 
         gate_values_layers = []
+
+        # Pile de blocs
         for block in self.blocks:
             if landmark_indices is not None:
                 B_cur, L_cur, D = x.shape
                 G = landmark_indices.size(1)
-                idx_safe = torch.clamp(landmark_indices, 0, L_cur - 1)
-                idx_exp = idx_safe.unsqueeze(-1).expand(B_cur, G, D)
-                landmark_states = torch.gather(x, dim=1, index=idx_exp)
+
+                if G > L_cur:
+                    # Limitation safe
+                    landmark_indices = torch.arange(L_cur, device=x.device).unsqueeze(0).expand(B_cur, L_cur)
+                    G = L_cur
+
+                min_l = int(landmark_indices.min().item())
+                max_l = int(landmark_indices.max().item())
+                assert 0 <= min_l <= max_l < L_cur, (
+                    f"[block {block.layer_idx}] landmark_indices hors bornes: "
+                    f"[{min_l}, {max_l}] vs L_cur={L_cur}"
+                )
+
+                indices_exp = landmark_indices.unsqueeze(-1).expand(B_cur, G, D)  # (B, G, D)
+                landmark_states = torch.gather(x, dim=1, index=indices_exp)      # (B, G, D)
             else:
                 landmark_states = None
 
             x = block(x, cache_global=landmark_states, global_weight=global_weight)
+
             monitor = getattr(block.attn, "last_monitor", None)
             if monitor and monitor.get("gate_scalar") is not None:
                 gate_values_layers.append(monitor["gate_scalar"])
 
         x = self.final_norm(x)
-        logits = self.lm_head(x)
+        logits = self.lm_head(x)  # (B, L, V)
 
         if return_aux:
             aux = {"landmark_indices": landmark_indices, "landmark_scores": landmark_scores}
             if gate_values_layers:
                 aux["gate_values"] = torch.stack(gate_values_layers, dim=0).detach()
             return logits, aux
+
         return logits
-    
+
+    # --------------------------------------------------------------
+    # Generation
+    # --------------------------------------------------------------
+
     @torch.no_grad()
     def generate(
         self,
@@ -260,67 +395,40 @@ class LLMTransformer(nn.Module):
         no_repeat_ngram_size: Optional[int] = None,
     ) -> torch.Tensor:
         """
-        Autoregressive generation with deterministic and corrected EOS handling.
-        
-        Args:
-            input_ids: Prompt token IDs of shape (batch, seq_len)
-            max_new_tokens: Maximum number of tokens to generate
-            temperature: Sampling temperature (0.0 = greedy, >0.0 = stochastic)
-            top_k: Top-K filtering threshold
-            top_p: Nucleus (top-P) filtering threshold
-            cache_global_ids: User-provided landmark indices (if learned=False)
-            seed: Random seed for reproducibility
-            stop_on_eos: Stop when all sequences generate EOS
-            eos_token_id: EOS token ID (default: GPT-2 EOS)
-            repetition_penalty: Penalty for repeating tokens (>1.0 penalizes repeats)
-            no_repeat_ngram_size: Size of n-grams to avoid repeating
-        
-        Returns:
-            Generated token IDs of shape (batch, seq_len + generated_tokens)
+        Generation autoregressive avec contrôle EOS et anti répétition.
+
+        input_ids: (B, L)
+        retourne: (B, L + tokens générés)
         """
-        # Force evaluation mode
         self.eval()
 
-        # Set random seed for reproducibility if provided
         if seed is not None:
             torch.manual_seed(seed)
             if torch.cuda.is_available():
                 torch.cuda.manual_seed_all(seed)
 
-        # Batch-aware EOS tracking: track which sequences have finished
         batch_size = input_ids.size(0)
         finished = torch.zeros(batch_size, dtype=torch.bool, device=input_ids.device)
 
-        # Precompute for no-repeat n-gram blocking
         use_no_repeat = no_repeat_ngram_size is not None and no_repeat_ngram_size > 0
-
-        # Preserve user-provided landmarks to avoid overwriting during generation
         user_provided_landmarks = cache_global_ids is not None
 
-        for step in range(max_new_tokens):
-            # Truncate if sequence exceeds max length
+        for _ in range(max_new_tokens):
             if input_ids.size(1) > self.cfg.max_seq_len:
                 input_ids = input_ids[:, -self.cfg.max_seq_len:]
-            
-            # Recalculate heuristic landmarks for each step (unless user provided)
+
             if not self.cfg.learned_landmarks and not user_provided_landmarks:
                 L = input_ids.size(1)
-                # Use linspace to ensure exactly global_k evenly spaced landmarks
-                landmark_positions = torch.linspace(0, L-1, self.cfg.global_k, device=input_ids.device).long()
+                landmark_positions = torch.linspace(0, L - 1, self.cfg.global_k, device=input_ids.device).long()
                 cache_global_ids = landmark_positions.unsqueeze(0).expand(input_ids.size(0), -1)
-            
-            # Forward pass to get logits
+
             logits = self(input_ids, cache_global_ids=cache_global_ids)  # (B, L, V)
-            
-            # Take logits for the last token
             logits = logits[:, -1, :]  # (B, V)
 
-            # Freeze finished sequences to only generate EOS
             if stop_on_eos and finished.any():
-                logits[finished] = float('-inf')
-                logits[finished, eos_token_id] = 1e4  # Force EOS
+                logits[finished] = float("-inf")
+                logits[finished, eos_token_id] = 1e4
 
-            # Anti-repetition controls before sampling
             if repetition_penalty is not None and repetition_penalty != 1.0:
                 penalty = max(repetition_penalty, 1e-6)
                 for b_idx in range(logits.size(0)):
@@ -343,135 +451,87 @@ class LLMTransformer(nn.Module):
                     if seq_len < n_size:
                         continue
 
-                    ngram_dict = {}
+                    ngram_dict: Dict[Tuple[int, ...], set] = {}
                     prev_tokens_list = prev_tokens.tolist()
                     for idx in range(seq_len - n_size + 1):
-                        ngram = tuple(prev_tokens_list[idx : idx + n_size])
+                        ngram = tuple(prev_tokens_list[idx: idx + n_size])
                         prefix = ngram[:-1]
-                        next_token = ngram[-1]
+                        next_tok = ngram[-1]
                         if prefix not in ngram_dict:
                             ngram_dict[prefix] = set()
-                        ngram_dict[prefix].add(next_token)
+                        ngram_dict[prefix].add(next_tok)
 
-                    current_prefix = tuple(prev_tokens_list[-(n_size - 1) :]) if n_size > 1 else tuple()
+                    if n_size > 1:
+                        current_prefix = tuple(prev_tokens_list[-(n_size - 1):])
+                    else:
+                        current_prefix = tuple()
+
                     banned_tokens = ngram_dict.get(current_prefix, set())
                     if banned_tokens:
                         banned_indices = torch.tensor(list(banned_tokens), device=logits.device, dtype=torch.long)
-                        logits[b_idx, banned_indices] = float('-inf')
+                        logits[b_idx, banned_indices] = float("-inf")
 
-            # Correct order: Temperature → Top-K → Top-P → Sample
             if temperature == 0.0:
-                # Greedy sampling: deterministic selection of best token
-                next_token = torch.argmax(logits, dim=-1, keepdim=True)  # (B, 1)
+                next_token = torch.argmax(logits, dim=-1, keepdim=True)
             else:
-                # Stochastic sampling
-                # 1. Apply temperature scaling
                 if temperature != 1.0:
                     logits = logits / temperature
 
-                # 2. Top-K filtering on temperature-scaled logits
                 if top_k is not None and top_k > 0:
-                    topk_vals, topk_idxs = torch.topk(logits, k=min(top_k, logits.size(-1)), dim=-1)
-                    logits_filtered = torch.full_like(logits, float('-inf'))
+                    k = min(top_k, logits.size(-1))
+                    topk_vals, topk_idxs = torch.topk(logits, k=k, dim=-1)
+                    logits_filtered = torch.full_like(logits, float("-inf"))
                     logits_filtered.scatter_(1, topk_idxs, topk_vals)
                     logits = logits_filtered
 
-                # 3. Top-P (nucleus) filtering on temperature-scaled logits
                 if top_p is not None and top_p < 1.0:
                     sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
                     cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
-
-                    # Remove tokens above cumulative probability threshold
                     sorted_indices_to_remove = cumulative_probs > top_p
                     sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-                    sorted_indices_to_remove[..., 0] = False  # Keep at least the best token
-
-                    sorted_logits[sorted_indices_to_remove] = float('-inf')
+                    sorted_indices_to_remove[..., 0] = False
+                    sorted_logits[sorted_indices_to_remove] = float("-inf")
                     logits = logits.scatter(1, sorted_indices, sorted_logits)
-                
-                # Sample with NaN protection
+
                 probs = F.softmax(logits, dim=-1)
-                
-                # Fallback to uniform if all logits are -inf
+
                 if torch.isnan(probs).any() or torch.isinf(probs).any():
                     probs = torch.ones_like(probs) / probs.size(-1)
-                
-                # Clamp and renormalize probabilities
+
                 probs = torch.clamp(probs, min=1e-10)
                 probs = probs / probs.sum(dim=-1, keepdim=True)
-                
-                next_token = torch.multinomial(probs, num_samples=1)  # (B, 1)
 
-            # Replace finished sequences with EOS
+                next_token = torch.multinomial(probs, num_samples=1)
+
             if stop_on_eos and finished.any():
                 next_token[finished] = eos_token_id
 
-            # Append new token to sequence
             input_ids = torch.cat([input_ids, next_token], dim=1)
 
-            # Batch-aware EOS stopping
             if stop_on_eos:
-                eos_mask = (next_token.squeeze(-1) == eos_token_id)  # (B,)
+                eos_mask = (next_token.squeeze(-1) == eos_token_id)
                 finished = finished | eos_mask
-
-                # Stop if all sequences have generated EOS
                 if finished.all():
                     break
 
-        # Post-processing: truncate at first EOS to avoid repeated EOS
         if stop_on_eos:
             for b_idx in range(input_ids.size(0)):
                 tokens = input_ids[b_idx]
                 eos_positions = (tokens == eos_token_id).nonzero(as_tuple=True)[0]
-
                 if len(eos_positions) > 0:
-                    first_eos_pos = eos_positions[0].item()
-                    # Pad everything after first EOS with EOS for consistent batch length
-                    input_ids[b_idx, first_eos_pos+1:] = eos_token_id
+                    first_eos_pos = int(eos_positions[0].item())
+                    input_ids[b_idx, first_eos_pos + 1:] = eos_token_id
 
         return input_ids
-    
+
+    # --------------------------------------------------------------
+    # Utilitaires
+    # --------------------------------------------------------------
+
     def get_num_params(self, non_embedding: bool = True) -> int:
         n_params = sum(p.numel() for p in self.parameters())
         if non_embedding:
             n_params -= self.token_emb.weight.numel()
         return n_params
-    
-    def estimate_mfu(self, fwdbwd_per_iter: int, dt: float, device: str = "cuda") -> float:
-        """
-        Estimate Model FLOPs Utilization (MFU) as percentage of peak theoretical FLOPs.
-        
-        Args:
-            fwdbwd_per_iter: Number of examples per iteration (batch_size * accum_steps)
-            dt: Time per iteration in seconds
-            device: Device name for peak FLOPs lookup
-        
-        Returns:
-            MFU as a fraction (0.0 to 1.0)
-        """
-        # Approximate FLOPs per forward pass
-        L = self.cfg.max_seq_len
-        N = self.cfg.n_layers
-        D = self.cfg.embed_dim
-        V = self.cfg.vocab_size
-        
-        # Rough approximation: attention + FFN FLOPs
-        flops_per_token = 6 * N * D * D
-        flops_per_fwdbwd = fwdbwd_per_iter * L * flops_per_token * 3  # ×3 for backward
-        
-        flops_per_sec = flops_per_fwdbwd / dt
-        
-        # Peak theoretical FLOPs based on device
-        if "3090" in device or "RTX 3090" in device:
-            peak_flops = 35.6e12  # RTX 3090 peak TFLOPs
-        elif "4090" in device:
-            peak_flops = 82.6e12  # RTX 4090 peak TFLOPs
-        elif "A100" in device:
-            peak_flops = 312e12  # A100 peak TFLOPs
-        else:
-            peak_flops = 100e12  # Default fallback
-        
-        mfu = flops_per_sec / peak_flops
-        return mfu
 
 __all__ = ["Config", "LLMTransformer", "TransformerBlock", "FeedForward", "RMSNorm"]

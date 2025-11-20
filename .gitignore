@@ -32,4 +32,12 @@ hive-mind-prompt-*.txt
 bk_model/
 training.log
 out_slga_fineweb/
-tests/__pycache__/
+archive/
+__pycache__/
+wandb/
+out_slga_128k/
+hive-mind/
+.hypothesis/
+claude-flow.cmd
+CLAUDE.md
+docs/

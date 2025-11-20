@@ -45,7 +45,8 @@ from src.monitoring import compute_long_dependency_recall
 from torch.utils.tensorboard import SummaryWriter
 
 def update_checkpointing(model: LLMTransformer, seq_len: int):
-    model.cfg.grad_checkpointing = (seq_len > 1024)
+    # Enable gradient checkpointing earlier (>512) to prevent OOM
+    model.cfg.grad_checkpointing = (seq_len > 512)
     for block in model.blocks:
         block.cfg.grad_checkpointing = model.cfg.grad_checkpointing
 
@@ -664,7 +665,8 @@ def main():
     parser = argparse.ArgumentParser(description="Train SLGA model")
     parser.add_argument("--config", type=str, default="config.yaml", help="Path to config file")
     parser.add_argument("--max-steps", type=int, default=None, help="Override max training steps")
-    parser.add_argument("--resume", action="store_true", help="Resume from latest checkpoint")
+    parser.add_argument("--resume", type=str, default=None, nargs='?', const='auto',
+                       help="Resume from checkpoint. Use --resume for auto-detection, or --resume path/to/checkpoint for specific checkpoint")
     args = parser.parse_args()
 
     config_file_path = os.path.abspath(args.config)
@@ -747,7 +749,20 @@ def main():
     
     # Tokenizer
     tokenizer = get_tokenizer(cfg["tokenizer"])
-    if tokenizer.vocab_size is not None:
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+
+    # Calculate actual vocab size needed (max token ID + 1)
+    # Some tokenizers like Qwen2 may have special tokens at vocab_size
+    actual_vocab_size = len(tokenizer)  # This gives the true size including all special tokens
+    print(f"Tokenizer vocab_size: {tokenizer.vocab_size} | len(tokenizer): {actual_vocab_size} | pad_token_id: {tokenizer.pad_token_id}")
+
+    # Use len(tokenizer) which accounts for all tokens including special ones
+    if actual_vocab_size > 0:
+        cfg["model"]["vocab_size"] = actual_vocab_size
+        print(f"✓ Set model vocab_size to {actual_vocab_size} (was {tokenizer.vocab_size})")
+    elif tokenizer.vocab_size is not None:
         cfg["model"]["vocab_size"] = tokenizer.vocab_size
 
     # Model
@@ -872,17 +887,41 @@ def main():
     step = 0  # Forward passes (actual training iterations)
     optimizer_step = 0  # Optimizer updates (step // accum_steps)
     if args.resume:
-        # Find latest checkpoint
-        checkpoints = [d for d in os.listdir(out_dir) if d.startswith("ckpt_")]
-        if checkpoints:
-            # Sort by step number (ckpt_1000 -> 1000)
-            latest_ckpt = max(checkpoints, key=lambda x: int(x.split("_")[1]))
-            checkpoint_path = os.path.join(out_dir, latest_ckpt)
+        checkpoint_path = None
+
+        # Case 1: Specific checkpoint path provided
+        if args.resume != 'auto':
+            checkpoint_path = args.resume
+            if not os.path.exists(checkpoint_path):
+                if accelerator.is_main_process:
+                    print(f"\n❌ ERROR: Checkpoint not found at {checkpoint_path}")
+                    print(f"Please check the path and try again.\n")
+                sys.exit(1)
 
             if accelerator.is_main_process:
                 print(f"\n{'='*80}")
-                print(f"🔄 RESUMING FROM CHECKPOINT: {latest_ckpt}")
+                print(f"🔄 RESUMING FROM SPECIFIC CHECKPOINT: {checkpoint_path}")
                 print(f"{'='*80}\n")
+
+        # Case 2: Auto-detection of latest checkpoint
+        else:
+            checkpoints = [d for d in os.listdir(out_dir) if d.startswith("ckpt_")]
+            if checkpoints:
+                # Sort by step number (ckpt_1000 -> 1000)
+                latest_ckpt = max(checkpoints, key=lambda x: int(x.split("_")[1]))
+                checkpoint_path = os.path.join(out_dir, latest_ckpt)
+
+                if accelerator.is_main_process:
+                    print(f"\n{'='*80}")
+                    print(f"🔄 AUTO-RESUMING FROM LATEST CHECKPOINT: {latest_ckpt}")
+                    print(f"{'='*80}\n")
+            else:
+                if accelerator.is_main_process:
+                    print(f"\n⚠️  --resume specified but no checkpoints found in {out_dir}")
+                    print(f"Starting from scratch...\n")
+
+        # Load checkpoint if found
+        if checkpoint_path:
 
             # Unwrap model for loading (if wrapped by Accelerator)
             unwrapped_model = accelerator.unwrap_model(model)
@@ -1476,32 +1515,41 @@ def main():
                         f"Val PPL: {val_metrics['perplexity']:.2f}"
                     )
 
-                # Synthetic recall monitoring
-                recall_k = (
-                    max(1, cfg["model"].get("global_k", 24) // 2),
-                    cfg["model"].get("global_k", 24),
-                )
-                recall_metrics = compute_long_dependency_recall(
-                    accelerator.unwrap_model(model),
-                    device,
-                    cfg,
-                    k_values=recall_k,
-                    batch_size=cfg["train"].get("monitor_batch_size", 4),
-                    num_batches=1,
-                    global_weight=global_weight,
-                )
+                # Synthetic recall monitoring (optional - can cause OOM with large vocab)
+                enable_recall_monitoring = cfg["train"].get("enable_recall_monitoring", False)
 
-                if recall_metrics:
-                    print("Synthetic long-range recall:")
-                    for name, value in recall_metrics.items():
-                        print(f"  {name}: {value:.3f}")
+                if enable_recall_monitoring:
+                    recall_k = (
+                        max(1, cfg["model"].get("global_k", 24) // 2),
+                        cfg["model"].get("global_k", 24),
+                    )
+                    try:
+                        recall_metrics = compute_long_dependency_recall(
+                            accelerator.unwrap_model(model),
+                            device,
+                            cfg,
+                            k_values=recall_k,
+                            batch_size=cfg["train"].get("monitor_batch_size", 1),  # Minimal batch size
+                            num_batches=1,
+                            global_weight=global_weight,
+                        )
 
-                    if cfg["log"].get("wandb", False):
-                        wandb.log({f"synthetic/{k}": v for k, v in recall_metrics.items()}, step=step)
+                        if recall_metrics:
+                            print("Synthetic long-range recall:")
+                            for name, value in recall_metrics.items():
+                                print(f"  {name}: {value:.3f}")
 
-                    if writer is not None:
-                        for key, value in recall_metrics.items():
-                            writer.add_scalar(f"synthetic/{key}", value, step)
+                            if cfg["log"].get("wandb", False):
+                                wandb.log({f"synthetic/{k}": v for k, v in recall_metrics.items()}, step=step)
+                    except RuntimeError as e:
+                        if "out of memory" in str(e):
+                            print(f"⚠️  Skipping recall monitoring due to OOM. Disable with enable_recall_monitoring: false")
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+                        else:
+                            raise
+                else:
+                    print("ℹ️  Recall monitoring disabled (set enable_recall_monitoring: true to enable)")
 
                 if cfg["log"].get("wandb", False):
                     wandb.log(

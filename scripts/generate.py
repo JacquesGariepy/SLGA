@@ -458,12 +458,19 @@ def main():
 
     # ✅ FIX Bug #31: Gérer vocab_size: null dans config
     # Si vocab_size est null, utiliser la taille du tokenizer
+    # IMPORTANT: Use len(tokenizer) not tokenizer.vocab_size to account for special tokens
     if cfg["model"].get("vocab_size") is None:
-        if hasattr(tokenizer, 'vocab_size') and tokenizer.vocab_size is not None:
+        if hasattr(tokenizer, '__len__'):
+            actual_vocab_size = len(tokenizer)
+            cfg["model"]["vocab_size"] = actual_vocab_size
+            print(f"ℹ️  vocab_size was null, using len(tokenizer): {actual_vocab_size}")
+            if hasattr(tokenizer, 'vocab_size') and tokenizer.vocab_size != actual_vocab_size:
+                print(f"   Note: tokenizer.vocab_size={tokenizer.vocab_size}, but len(tokenizer)={actual_vocab_size}")
+        elif hasattr(tokenizer, 'vocab_size') and tokenizer.vocab_size is not None:
             cfg["model"]["vocab_size"] = tokenizer.vocab_size
-            print(f"ℹ️  vocab_size was null, using tokenizer vocab_size: {tokenizer.vocab_size}")
+            print(f"⚠️  Warning: Using tokenizer.vocab_size={tokenizer.vocab_size} (len() not available)")
         else:
-            print(f"⚠️  Warning: vocab_size is null and tokenizer.vocab_size unavailable")
+            print(f"⚠️  Warning: vocab_size is null and tokenizer size unavailable")
             print(f"   Using default: 50257 (GPT-2)")
             cfg["model"]["vocab_size"] = 50257
 
