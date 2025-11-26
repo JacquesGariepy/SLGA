@@ -32,6 +32,13 @@ from .reasoning_model import (
     SLGAReasoningModel,
     create_reasoning_model,
 )
+from .tree_of_thought import (
+    SearchStrategy,
+    ThoughtNode,
+    ToTConfig,
+    TreeOfThought,
+    create_tree_of_thought,
+)
 
 __all__ = [
     # Core
@@ -59,4 +66,10 @@ __all__ = [
     "ReasoningModelConfig",
     "SLGAReasoningModel",
     "create_reasoning_model",
+    # Tree of Thought
+    "SearchStrategy",
+    "ThoughtNode",
+    "ToTConfig",
+    "TreeOfThought",
+    "create_tree_of_thought",
 ]
