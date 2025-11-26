@@ -1,0 +1,250 @@
+# =============================================================================
+# SLGA-Reasoning Model Configuration
+# Configuration optimisée pour l'entraînement d'un modèle de raisonnement
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Architecture du modèle
+# -----------------------------------------------------------------------------
+model:
+  vocab_size: 50261          # 50257 (GPT-2) + 4 tokens spéciaux reasoning
+  max_seq_len: 4096          # Plus long pour les chaînes de raisonnement
+  embed_dim: 768             # Dimension plus grande pour capturer le raisonnement
+  num_heads: 12
+  ff_hidden_multiplier: 4
+  n_layers: 16               # Plus de couches pour un raisonnement profond
+  dropout_rate: 0.1
+
+# -----------------------------------------------------------------------------
+# SLGA - Sparse Local-Global Attention
+# Optimisé pour le raisonnement
+# -----------------------------------------------------------------------------
+slga:
+  local_window: 256          # Fenêtre plus grande pour le contexte local
+  global_k: 48               # Plus de landmarks pour les références
+  gated_fusion: true
+  learned_landmarks: true
+  dilated_windows: true
+  diverse_topk: true
+
+  # Nouveau: Landmarks spécialisés raisonnement
+  reasoning_landmarks: true   # Active ReasoningLandmarkSelector
+  num_reasoning_types: 4      # prémisse, définition, étape, conclusion
+
+# -----------------------------------------------------------------------------
+# Module de Raisonnement
+# -----------------------------------------------------------------------------
+reasoning:
+  enabled: true
+
+  # Tokens spéciaux (ajoutés au vocabulaire)
+  think_token_id: 50257      # <think>
+  end_think_token_id: 50258  # </think>
+  step_token_id: 50259       # <step>
+  answer_token_id: 50260     # <answer>
+
+  # Contrôle du raisonnement
+  max_reasoning_steps: 16
+  min_reasoning_steps: 2
+  reasoning_depth_penalty: 0.01
+
+  # Process Reward Model
+  use_prm: true
+  prm_hidden_dim: 256
+  prm_weight: 0.5            # Poids de la loss PRM
+
+  # Self-Consistency (inférence)
+  self_consistency:
+    enabled: true
+    num_samples: 5
+    temperature: 0.7
+    vote_threshold: 0.6
+
+# -----------------------------------------------------------------------------
+# Données d'entraînement
+# -----------------------------------------------------------------------------
+data:
+  # Datasets de raisonnement (à télécharger)
+  datasets:
+    # Mathématiques
+    - name: "gsm8k"
+      path: "openai/gsm8k"
+      split: "train"
+      weight: 1.0
+
+    - name: "math"
+      path: "hendrycks/competition_math"
+      split: "train"
+      weight: 0.8
+
+    - name: "aqua_rat"
+      path: "aqua_rat"
+      split: "train"
+      weight: 0.5
+
+    # Raisonnement logique
+    - name: "logiqa"
+      path: "lucasmccabe/logiqa"
+      split: "train"
+      weight: 0.7
+
+    - name: "reclor"
+      path: "reclor"
+      split: "train"
+      weight: 0.6
+
+    # Science
+    - name: "sciq"
+      path: "allenai/sciq"
+      split: "train"
+      weight: 0.5
+
+    - name: "arc_challenge"
+      path: "ai2_arc"
+      config: "ARC-Challenge"
+      split: "train"
+      weight: 0.6
+
+    # Chain-of-Thought synthétiques
+    - name: "cot_collection"
+      path: "kaist-ai/CoT-Collection"
+      split: "train"
+      weight: 1.5  # Plus important
+
+  # Prétraitement
+  preprocessing:
+    add_reasoning_tokens: true
+    format_as_cot: true
+    max_steps_per_example: 10
+
+  # Augmentation
+  augmentation:
+    enabled: true
+    step_dropout: 0.1        # Supprimer aléatoirement des étapes
+    step_shuffle: 0.05       # Mélanger l'ordre (pour robustesse)
+    paraphrase_steps: 0.2    # Paraphraser les étapes
+
+# -----------------------------------------------------------------------------
+# Entraînement
+# -----------------------------------------------------------------------------
+training:
+  # Batch et accumulation
+  batch_size: 4              # Petits batches (séquences longues)
+  accum_steps: 8             # Accumulation pour batch effectif 32
+
+  # Optimiseur
+  optimizer: "adamw"
+  lr: 1.0e-4
+  weight_decay: 0.1
+  betas: [0.9, 0.95]
+
+  # Scheduler
+  scheduler: "cosine"
+  warmup_steps: 1000
+  max_steps: 100000
+
+  # Pertes
+  loss:
+    lm_weight: 1.0
+    process_reward_weight: 0.5
+    depth_penalty_weight: 0.1
+    consistency_weight: 0.1
+    landmark_spacing_weight: 0.01
+
+  # Curriculum d'apprentissage du raisonnement
+  curriculum:
+    enabled: true
+    # Phase 1: Étapes courtes (2-4 steps)
+    phase1_steps: 0
+    phase1_max_reasoning: 4
+    # Phase 2: Étapes moyennes (4-8 steps)
+    phase2_steps: 20000
+    phase2_max_reasoning: 8
+    # Phase 3: Étapes longues (8-16 steps)
+    phase3_steps: 50000
+    phase3_max_reasoning: 16
+
+  # Régularisation
+  gradient_clip: 1.0
+  label_smoothing: 0.1
+
+  # Checkpoints
+  save_every_steps: 5000
+  eval_every_steps: 1000
+
+  # Mixed precision
+  amp: true
+  amp_dtype: "bfloat16"
+
+# -----------------------------------------------------------------------------
+# Évaluation
+# -----------------------------------------------------------------------------
+evaluation:
+  # Benchmarks de raisonnement
+  benchmarks:
+    - name: "gsm8k_test"
+      dataset: "openai/gsm8k"
+      split: "test"
+      metric: "exact_match"
+
+    - name: "math_test"
+      dataset: "hendrycks/competition_math"
+      split: "test"
+      metric: "exact_match"
+
+    - name: "arc_challenge_test"
+      dataset: "ai2_arc"
+      config: "ARC-Challenge"
+      split: "test"
+      metric: "accuracy"
+
+  # Métriques spécifiques
+  metrics:
+    - reasoning_accuracy       # Réponse finale correcte
+    - step_accuracy           # Étapes individuelles correctes
+    - reasoning_length        # Nombre moyen d'étapes
+    - reasoning_consistency   # Cohérence entre étapes
+
+  # Self-consistency évaluation
+  self_consistency_eval:
+    enabled: true
+    num_samples: 10
+    report_variance: true
+
+# -----------------------------------------------------------------------------
+# Inférence
+# -----------------------------------------------------------------------------
+inference:
+  # Génération
+  temperature: 0.0           # Déterministe par défaut
+  top_k: 50
+  top_p: 0.9
+  max_new_tokens: 1024
+
+  # Arrêt
+  stop_tokens:
+    - "</answer>"
+    - "<|endoftext|>"
+
+  # Self-consistency
+  use_self_consistency: true
+  num_reasoning_paths: 5
+
+  # Beam search (optionnel)
+  beam_search:
+    enabled: false
+    num_beams: 4
+    length_penalty: 1.0
+
+# -----------------------------------------------------------------------------
+# Hardware
+# -----------------------------------------------------------------------------
+hardware:
+  # Pour RTX 3090 (24GB)
+  device: "cuda"
+  precision: "bf16"
+  grad_checkpointing: true   # Nécessaire pour seq_len=4096
+
+  # Optimisations
+  torch_compile: false       # Désactivé pour debugging
+  flash_attention: true      # Si disponible
