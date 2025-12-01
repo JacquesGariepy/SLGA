@@ -1,0 +1,177 @@
+# ============================================================================
+# SLGA v2.0 - FINE-TUNING CONFIG avec LoRA
+# ============================================================================
+# Objectif: Améliorer les connaissances factuelles après pre-training Wikipedia
+# Dataset: OpenAssistant (conversations + Q&A de qualité)
+# ============================================================================
+
+seed: 42
+
+# ============================================================================
+# TOKENIZER (identique au pre-training)
+# ============================================================================
+tokenizer:
+  name: "Qwen/Qwen2-7B"
+
+# ============================================================================
+# MODEL - 116M params (identique au pre-training)
+# ============================================================================
+model:
+  vocab_size: 152064
+  max_seq_len: 131072
+  embed_dim: 512
+  num_heads: 8
+  ff_hidden_multiplier: 4
+  n_layers: 12
+  dropout_rate: 0.05              # Réduit pour fine-tuning
+
+  local_window: 128
+  global_k: 24
+  gated_fusion: true
+  learned_landmarks: true
+  dilated_windows: true
+  diverse_topk: true
+
+# ============================================================================
+# DATA - OpenAssistant Guanaco (conversations pré-formatées)
+# ============================================================================
+# Problème avec oasst1: messages individuels, pas de contexte Q&A
+# Solution: Guanaco a des conversations complètes pré-formatées
+#
+# Alternatives:
+#   - timdettmers/openassistant-guanaco: 9.8k conversations formatées ✅
+#   - tatsu-lab/alpaca: 52k instructions (synthétique GPT-4)
+#   - databricks/dolly-15k: 15k Q&A (petit mais haute qualité)
+# ============================================================================
+data:
+  # === OpenAssistant Guanaco (RECOMMANDÉ - format correct) ===
+  dataset: "timdettmers/openassistant-guanaco"
+  subset: null
+  split_train: "train"
+  split_val: null  # Pas de split validation, on va en créer un
+
+  # === STREAMING MODE ===
+  streaming: false  # Dataset petit, pas besoin de streaming
+  shuffle_buffer_size: 5000
+
+  max_val_samples: 200
+  val_split_ratio: 0.05  # 5% pour validation
+  num_workers: 0
+
+# ============================================================================
+# TRAINING - Fine-tuning optimisé
+# ============================================================================
+train:
+  max_steps: 10000                # 10k steps suffisent pour fine-tuning
+
+  # === RTX 3090 OPTIMAL ===
+  batch_size: 4                   # Plus grand car seq plus court
+  accum_steps: 8                  # Effective batch = 32
+
+  # === LR plus bas pour fine-tuning ===
+  lr: 5.0e-5                      # 3-10x plus bas que pre-training
+  warmup_steps: 500
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  weight_decay: 0.01              # Moins de régularisation
+  grad_clip: 1.0
+
+  # Pas de scorer_lr_multiplier (LoRA gère tout)
+
+  amp: true
+  amp_dtype: "bf16"
+  grad_checkpointing: false       # Pas nécessaire avec LoRA
+
+  # Pas de curriculum pour fine-tuning
+  seq_len_start: 512
+  seq_len_mid: 512
+  seq_len_final: 512
+  seq_len_warmup_steps: 0
+
+  # Pas de global warmup
+  global_warmup_start: 0
+  global_warmup_end: 0
+
+  # Losses (désactivées pour fine-tuning pur)
+  lambda_spacing: 0.0
+  lambda_sparsity: 0.0
+  lambda_diversity: 0.0
+
+  # Logging plus fréquent
+  log_every: 25
+  eval_every: 500
+  save_every: 1000
+
+  enable_recall_monitoring: false
+  out_dir: "out/finetune_guanaco"
+  keep_last_checkpoints: 3
+
+# ============================================================================
+# LORA - Configuration optimale pour 116M
+# ============================================================================
+lora:
+  enabled: true
+  rank: 16                            # Rank moyen (8-32 typique)
+  alpha: 32.0                         # alpha = 2x rank
+  target_modules:
+    - qkv_proj
+    - out_proj
+    - fc1
+    - fc2
+  dropout: 0.05
+  use_qlora: false                    # Pas nécessaire, modèle déjà petit
+  merge_weights: false
+
+# ============================================================================
+# INFERENCE (pour évaluation)
+# ============================================================================
+inference:
+  batch_size: 1
+  max_new_tokens: 128
+  temperature: 0.7
+  top_k: 50
+  top_p: 0.9
+  repetition_penalty: 1.2
+  no_repeat_ngram_size: 3
+
+# ============================================================================
+# EVALUATION
+# ============================================================================
+evaluation:
+  generate_every: 500
+  max_new_tokens: 100
+  temperature: 0.7
+  top_k: 50
+  top_p: 0.9
+  repetition_penalty: 1.2
+
+  prompts:
+    - "Who was Albert Einstein?"
+    - "What is the capital of France?"
+    - "Explain machine learning in simple terms:"
+    - "The theory of relativity states that"
+    - "In 1969, humans"
+    - "Python is a programming language that"
+    - "The largest planet in our solar system is"
+
+# ============================================================================
+# SAVE & LOG
+# ============================================================================
+save:
+  out_dir: "out/finetune_guanaco"
+
+log:
+  tensorboard: true
+  wandb: false
+  project: "slga-finetune"
+  system_info_every: 200
+
+# ============================================================================
+# MEMORY USAGE ESTIMÉ (RTX 3090, LoRA rank=16)
+# ============================================================================
+# Model weights (frozen): ~450 MB
+# LoRA params:            ~2-3 MB (0.5% du modèle)
+# Activations:            ~1-2 GB
+# Optimizer (LoRA only):  ~6-10 MB
+# TOTAL:                  ~2-3 GB / 24 GB
+# ============================================================================

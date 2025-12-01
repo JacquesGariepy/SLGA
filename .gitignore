@@ -1,5 +1,5 @@
 scripts/__pycache__/
-out_slga/
+out/
 src/__pycache__/
 
 # Claude Flow generated files
@@ -41,3 +41,10 @@ hive-mind/
 claude-flow.cmd
 CLAUDE.md
 docs/
+FLASH_ATTENTION.md
+FLASH_ATTENTION_QUICKSTART.md
+scripts/old/
+src/old/
+venv/
+.gitignore
+config/old/

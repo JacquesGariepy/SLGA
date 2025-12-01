@@ -1,26 +1,56 @@
-"""
-SLGA-Plus: Sparse Local-Global Attention Transformer
+from .model import Config, LLMTransformer, TransformerBlock, FeedForward, RMSNorm
+from .slga import SLGAModule, RotaryEmbedding
+from .landmarks import (
+    LearnableLandmarkSelector,
+    PositionalLandmarkSelector,
+    HybridLandmarkSelector,
+    landmark_spacing_loss,
+    landmark_diversity_loss,
+    landmark_sparsity_loss,
+)
+from .kv_cache import KVCache
 
-Main package for efficient long-context language modeling.
-"""
+# Flash Attention (optional)
+try:
+    from .flash_attention import (
+        FLASH_ATTN_AVAILABLE,
+        FLASH_ATTN_VERSION,
+        flash_attention_forward,
+        flash_attention_local_window,
+        FlashAttentionModule,
+        benchmark_flash_attention,
+        get_flash_attention_info,
+    )
+    _FLASH_IMPORTS = [
+        "FLASH_ATTN_AVAILABLE",
+        "FLASH_ATTN_VERSION",
+        "flash_attention_forward",
+        "flash_attention_local_window",
+        "FlashAttentionModule",
+        "benchmark_flash_attention",
+        "get_flash_attention_info",
+    ]
+except ImportError:
+    _FLASH_IMPORTS = []
 
-__version__ = "0.1.0"
-__author__ = "SLGA Team"
-
-from .slga import SLGAModule
-from .landmarks import LearnableLandmarkSelector, landmark_diversity_loss, landmark_sparsity_loss
-from .model import Config, LLMTransformer
-from .data import get_tokenizer, load_text_dataset, CollatorLocal, CollatorLocalGlobal
-
+__version__ = "2.0.0"
 __all__ = [
-    "SLGAModule",
-    "LearnableLandmarkSelector",
-    "landmark_diversity_loss",
-    "landmark_sparsity_loss",
+    # Model
     "Config",
     "LLMTransformer",
-    "get_tokenizer",
-    "load_text_dataset",
-    "CollatorLocal",
-    "CollatorLocalGlobal"
-]
+    "TransformerBlock",
+    "FeedForward",
+    "RMSNorm",
+    # Attention
+    "SLGAModule",
+    "RotaryEmbedding",
+    # Landmarks
+    "LearnableLandmarkSelector",
+    "PositionalLandmarkSelector",
+    "HybridLandmarkSelector",
+    "landmark_spacing_loss",
+    "landmark_diversity_loss",
+    "landmark_sparsity_loss",
+    # KV Cache
+    "KVCache",
+] + _FLASH_IMPORTS

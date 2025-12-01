@@ -1,766 +1,746 @@
-# generate_fixed.py
+#!/usr/bin/env python3
 """
-Génération de texte avec un modèle SLGA entraîné - VERSION CORRIGÉE.
-Logs toutes les générations avec métadonnées complètes.
+SLGA Text Generation Script with Quality Evaluation
+Usage:
+    python generate.py --checkpoint out_slga/best_overall --prompt "Einstein was"
+    python generate.py --config config.yaml --interactive
+    python generate.py --checkpoint out_slga/ckpt_1000 --prompt "Hello" --evaluate
+    python generate.py --checkpoint out_slga/ckpt_1000 --benchmark  # Run benchmark suite
+    python generate.py --history out_slga/  # View generation history
 """
 
-from __future__ import annotations
 import os
 import sys
-import yaml
-import torch
 import argparse
-from transformers import AutoTokenizer
-from datetime import datetime
 import json
-import pickle
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, Dict, Any, List
 
+import torch
+import yaml
 
-def _format_metric(value: float, decimal_places: int = 4) -> str:
-    """Display tiny magnitudes without dropping them to zero."""
-    if value is None:
-        return "N/A"
-    if value != 0.0 and abs(value) < 10 ** (-decimal_places):
-        return f"{value:.{decimal_places + 2}e}"
-    return f"{value:.{decimal_places}f}"
-
-# Add project root to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.model import Config, LLMTransformer
+from src.data import get_tokenizer
+from src.evaluation import GenerationEvaluator, GenerationQualityMetrics
 
+
+# ======================================================================
+# Model Loading
+# ======================================================================
+
+def load_model(checkpoint_dir: str, config_path: str = None, device: str = "cuda"):
+    """Load model from checkpoint."""
+
+    # Load config
+    if config_path:
+        with open(config_path) as f:
+            cfg = yaml.safe_load(f)
+    else:
+        # Try to find config in checkpoint
+        config_path = os.path.join(checkpoint_dir, "config.yaml")
+        if os.path.exists(config_path):
+            with open(config_path) as f:
+                cfg = yaml.safe_load(f)
+        else:
+            # Use default
+            cfg = {"model": {}, "tokenizer": {"name": "Qwen/Qwen2-7B"}}
+
+    # Tokenizer
+    tokenizer = get_tokenizer(cfg["tokenizer"])
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+
+    # Update vocab size
+    cfg["model"]["vocab_size"] = len(tokenizer)
+
+    # Model
+    model_cfg = Config(**cfg["model"])
+    model = LLMTransformer(model_cfg)
+
+    # Load weights
+    model_path = os.path.join(checkpoint_dir, "model.pt")
+    if os.path.exists(model_path):
+        state_dict = torch.load(model_path, map_location=device)
+        model.load_state_dict(state_dict, strict=False)
+        print(f"Loaded weights from {model_path}")
+    else:
+        print(f"No weights found at {model_path}")
+
+    model = model.to(device)
+    model.eval()
+
+    return model, tokenizer, cfg
+
+
+def get_checkpoint_info(checkpoint_dir: str) -> Dict[str, Any]:
+    """Get checkpoint metadata."""
+    info = {
+        "checkpoint_path": checkpoint_dir,
+        "checkpoint_type": "directory",
+        "step": None,
+        "loss": None,
+        "timestamp": datetime.now().isoformat(),
+    }
+
+    # Try to get step from trainer state
+    trainer_path = os.path.join(checkpoint_dir, "trainer_state.pt")
+    if os.path.exists(trainer_path):
+        try:
+            state = torch.load(trainer_path, map_location="cpu")
+            info["step"] = state.get("step", None)
+            info["loss"] = state.get("best_loss", None)
+        except Exception:
+            pass
+
+    # Try to get step from directory name
+    if info["step"] is None:
+        dir_name = os.path.basename(checkpoint_dir)
+        if "ckpt_" in dir_name:
+            try:
+                info["step"] = int(dir_name.split("_")[-1])
+            except ValueError:
+                pass
+
+    return info
+
+
+# ======================================================================
+# Generation with Evaluation
+# ======================================================================
 
 def generate_text(
     model: LLMTransformer,
-    tokenizer: AutoTokenizer,
+    tokenizer,
     prompt: str,
     max_new_tokens: int = 100,
-    temperature: float = 0.6,
-    top_k: int = 80,
-    top_p: float | None = 0.95,
-    repetition_penalty: float = 1.15,
-    no_repeat_ngram_size: int | None = 4,
-    eos_token_id: int | None = None,
-    stop_on_eos: bool = True,
+    temperature: float = 0.7,
+    top_k: int = 50,
+    top_p: float = 0.9,
+    repetition_penalty: float = 1.2,
+    no_repeat_ngram_size: int = 3,
     device: str = "cuda",
-) -> str:
-    """Génère du texte à partir d'un prompt."""
-    # Validate generation parameters
-    if not prompt or not prompt.strip():
-        raise ValueError("Prompt cannot be empty")
-
-    if max_new_tokens <= 0:
-        raise ValueError(f"max_new_tokens must be positive, got {max_new_tokens}")
-
-    if temperature < 0:
-        raise ValueError(f"temperature must be ≥ 0, got {temperature}")
-
-    if top_k is not None and top_k < 0:
-        raise ValueError(f"top_k must be non-negative, got {top_k}")
-
-    if top_p is not None and not (0 < top_p <= 1):
-        raise ValueError(f"top_p must be in (0, 1], got {top_p}")
-
-    if repetition_penalty is not None and repetition_penalty < 1.0:
-        raise ValueError(
-            f"repetition_penalty must be ≥ 1.0 (1.0 disables it), got {repetition_penalty}"
-        )
-
-    if no_repeat_ngram_size is not None and no_repeat_ngram_size < 0:
-        raise ValueError(
-            f"no_repeat_ngram_size must be ≥ 0 (0 disables it), got {no_repeat_ngram_size}"
-        )
-
-    model.eval()
-
-    # Encoder prompt
-    try:
-        input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
-    except Exception as e:
-        raise RuntimeError(f"Failed to encode prompt: {e}") from e
-
-    print(f"Prompt length: {input_ids.size(1)} tokens")
-    print(f"Generating {max_new_tokens} new tokens...")
-    print()
-
-    # ✅ FIX: Passer eos_token_id depuis tokenizer si non fourni
-    if eos_token_id is None:
-        eos_token_id = tokenizer.eos_token_id
-
-    # Générer
-    try:
-        with torch.no_grad():
-            output_ids = model.generate(
-                input_ids,
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                top_k=top_k,
-                top_p=top_p,
-                repetition_penalty=repetition_penalty,
-                no_repeat_ngram_size=no_repeat_ngram_size,
-                eos_token_id=eos_token_id,
-                stop_on_eos=stop_on_eos,
-            )
-    except RuntimeError as e:
-        if "out of memory" in str(e).lower():
-            raise RuntimeError(
-                f"GPU out of memory during generation. "
-                f"Try reducing max_new_tokens or using CPU."
-            ) from e
-        raise RuntimeError(f"Model generation failed: {e}") from e
-    except ValueError as e:
-        raise ValueError(f"Invalid generation parameters: {e}") from e
-
-    # Décoder
-    try:
-        generated_text = tokenizer.decode(output_ids[0], skip_special_tokens=True)
-    except Exception as e:
-        raise RuntimeError(f"Failed to decode output: {e}") from e
-
-    return generated_text
-
-
-def load_checkpoint(checkpoint_path: str, model: LLMTransformer) -> tuple[LLMTransformer, dict]:
+) -> tuple:
     """
-    Charge un checkpoint CORRECTEMENT et retourne les métadonnées.
-
-    Args:
-        checkpoint_path: Chemin vers checkpoint (dir ou fichier)
-        model: Modèle à charger
+    Generate text from prompt with timing.
 
     Returns:
-        model: Modèle avec poids chargés
-        metadata: Dictionnaire avec métadonnées du checkpoint
+        (output_text, generation_time_seconds)
     """
-    print(f"Loading checkpoint from {checkpoint_path}...")
+    # Tokenize
+    input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
 
-    metadata = {
-        "checkpoint_path": checkpoint_path,
-        "checkpoint_type": None,
-        "step": None,
-        "loss": None,
-        "timestamp": None,
+    # Generate with timing
+    start_time = time.time()
+
+    with torch.no_grad():
+        output_ids = model.generate(
+            input_ids,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+            no_repeat_ngram_size=no_repeat_ngram_size,
+            eos_token_id=tokenizer.eos_token_id,
+            stop_on_eos=True,
+        )
+
+    generation_time = time.time() - start_time
+
+    # Decode
+    output_text = tokenizer.decode(output_ids[0], skip_special_tokens=True)
+
+    return output_text, generation_time
+
+
+def generate_and_evaluate(
+    model: LLMTransformer,
+    tokenizer,
+    evaluator: GenerationEvaluator,
+    prompt: str,
+    generation_params: Dict[str, Any],
+    device: str = "cuda",
+    verbose: bool = True,
+) -> tuple:
+    """
+    Generate text and evaluate quality.
+
+    Returns:
+        (output_text, metrics, generation_time)
+    """
+    # Generate
+    output_text, gen_time = generate_text(
+        model, tokenizer, prompt,
+        max_new_tokens=generation_params.get("max_new_tokens", 100),
+        temperature=generation_params.get("temperature", 0.7),
+        top_k=generation_params.get("top_k", 50),
+        top_p=generation_params.get("top_p", 0.9),
+        repetition_penalty=generation_params.get("repetition_penalty", 1.2),
+        no_repeat_ngram_size=generation_params.get("no_repeat_ngram_size", 3),
+        device=device,
+    )
+
+    # Evaluate
+    metrics = evaluator.evaluate(
+        prompt=prompt,
+        generated_text=output_text,
+        generation_time=gen_time,
+        compute_perplexity=True,
+    )
+
+    if verbose:
+        print_evaluation_summary(metrics)
+
+    return output_text, metrics, gen_time
+
+
+def print_evaluation_summary(metrics: GenerationQualityMetrics):
+    """Print a summary of evaluation metrics."""
+    print("\n" + "=" * 60)
+    print(f"QUALITY EVALUATION: {metrics.overall_score:.1f}/100 ({metrics.quality_grade})")
+    print("=" * 60)
+
+    print(f"\nPerplexity:")
+    print(f"  Sequence PPL: {metrics.perplexity.sequence_perplexity:.2f}")
+    print(f"  Token PPL (avg): {metrics.perplexity.token_perplexity:.2f}")
+    print(f"  Confident tokens: {metrics.perplexity.confident_tokens_ratio*100:.1f}%")
+
+    print(f"\nDiversity:")
+    print(f"  Distinct-1: {metrics.diversity.distinct_1:.3f}")
+    print(f"  Distinct-2: {metrics.diversity.distinct_2:.3f}")
+    print(f"  Distinct-3: {metrics.diversity.distinct_3:.3f}")
+    print(f"  Lexical entropy: {metrics.diversity.lexical_entropy:.2f}")
+    print(f"  Type-Token Ratio: {metrics.diversity.type_token_ratio:.3f}")
+
+    print(f"\nRepetition:")
+    print(f"  Rep-1: {metrics.repetition.rep_1:.3f}")
+    print(f"  Rep-2: {metrics.repetition.rep_2:.3f}")
+    print(f"  Rep-3: {metrics.repetition.rep_3:.3f}")
+    if metrics.repetition.loop_detected:
+        print(f"  LOOP DETECTED: '{metrics.repetition.loop_pattern}'")
+
+    print(f"\nCoherence:")
+    print(f"  Coherence score: {metrics.coherence.coherence_score:.3f}")
+    print(f"  Gibberish score: {metrics.coherence.gibberish_score:.3f}")
+    if metrics.coherence.has_broken_words:
+        print(f"  Broken words detected")
+    if metrics.coherence.has_special_char_spam:
+        print(f"  Special char spam detected")
+
+    print(f"\nPerformance:")
+    print(f"  Tokens: {metrics.num_tokens}")
+    print(f"  Time: {metrics.generation_time:.2f}s")
+    print(f"  Speed: {metrics.tokens_per_second:.1f} tok/s")
+
+    if metrics.issues:
+        print(f"\nIssues:")
+        for issue in metrics.issues:
+            print(f"  - {issue}")
+
+    if metrics.recommendations:
+        print(f"\nRecommendations:")
+        for rec in metrics.recommendations:
+            print(f"  - {rec}")
+
+    print("=" * 60)
+
+
+# ======================================================================
+# History Logging
+# ======================================================================
+
+def log_generation(
+    output_dir: str,
+    prompt: str,
+    generated_text: str,
+    generation_params: Dict[str, Any],
+    model_config: Dict[str, Any],
+    checkpoint_info: Dict[str, Any],
+    metrics: Optional[GenerationQualityMetrics] = None,
+    generation_time: float = 0.0,
+    device: str = "cuda",
+):
+    """
+    Log generation to JSONL history file with full metrics.
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    history_file = output_path / "generation_history.jsonl"
+
+    # Build log entry
+    entry = {
+        "timestamp": datetime.now().isoformat(),
+        "prompt": prompt,
+        "generated_text": generated_text,
+        "generation_params": generation_params,
+        "model_config": model_config,
+        "checkpoint": checkpoint_info,
+        "device": device,
+        "generation_time_seconds": generation_time,
     }
 
-    if os.path.isdir(checkpoint_path):
-        # Format: out_slga/ckpt_11000/
-        metadata["checkpoint_type"] = "directory"
+    # Add evaluation metrics if available
+    if metrics:
+        entry["evaluation"] = {
+            "overall_score": metrics.overall_score,
+            "quality_grade": metrics.quality_grade,
+            "perplexity": metrics.perplexity.to_dict(),
+            "diversity": metrics.diversity.to_dict(),
+            "repetition": metrics.repetition.to_dict(),
+            "coherence": metrics.coherence.to_dict(),
+            "issues": metrics.issues,
+            "recommendations": metrics.recommendations,
+            "num_tokens": metrics.num_tokens,
+            "tokens_per_second": metrics.tokens_per_second,
+        }
 
-        # Extraire step depuis le nom du dossier
-        dir_name = os.path.basename(checkpoint_path)
-        if dir_name.startswith("ckpt_"):
-            try:
-                metadata["step"] = int(dir_name.split("_")[1])
-            except ValueError as e:
-                print(f"⚠ Warning: Invalid step number in directory name '{dir_name}': {e}")
-                print(f"   Expected format: ckpt_<number>")
-                # Continue without step metadata
-            except IndexError as e:
-                print(f"⚠ Warning: Malformed directory name '{dir_name}': {e}")
-                print(f"   Expected format: ckpt_<number>")
-                # Continue without step metadata
+    # Append to history
+    with open(history_file, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-        model_path = os.path.join(checkpoint_path, "model.pt")
-        trainer_state_path = os.path.join(checkpoint_path, "trainer_state.pt")
-
-        if not os.path.exists(model_path):
-            available = os.listdir(checkpoint_path)
-            raise FileNotFoundError(
-                f"❌ model.pt not found in {checkpoint_path}\n"
-                f"   Available files: {available}\n"
-                f"   Expected: model.pt (state dict of the model)"
-            )
-
-        print(f"  Loading state dict from {model_path}...")
-        try:
-            state_dict = torch.load(model_path, map_location="cpu")
-        except RuntimeError as e:
-            raise RuntimeError(
-                f"Failed to load checkpoint file (PyTorch error): {e}\n"
-                f"   File may be corrupted or from incompatible PyTorch version"
-            ) from e
-        except pickle.UnpicklingError as e:
-            raise RuntimeError(
-                f"Failed to unpickle checkpoint file: {e}\n"
-                f"   File appears to be corrupted"
-            ) from e
-        except EOFError as e:
-            raise RuntimeError(
-                f"Checkpoint file is incomplete (truncated): {e}\n"
-                f"   File may have been interrupted during save"
-            ) from e
-
-        # Charger métadonnées du trainer state si disponible
-        if os.path.exists(trainer_state_path):
-            try:
-                trainer_state = torch.load(trainer_state_path, map_location="cpu")
-                metadata["step"] = trainer_state.get("step", metadata["step"])
-                metadata["loss"] = trainer_state.get("loss", None)
-                metadata["timestamp"] = datetime.fromtimestamp(
-                    os.path.getmtime(trainer_state_path)
-                ).isoformat()
-            except RuntimeError as e:
-                print(f"⚠ Warning: PyTorch error loading trainer state: {e}")
-                print(f"   File may be corrupted or from incompatible PyTorch version")
-                # Continue without trainer metadata
-            except pickle.UnpicklingError as e:
-                print(f"⚠ Warning: Corrupted pickle data in trainer state: {e}")
-                print(f"   File: {trainer_state_path}")
-                # Continue without trainer metadata
-            except EOFError as e:
-                print(f"⚠ Warning: Incomplete trainer state file (truncated): {e}")
-                print(f"   File may have been interrupted during save")
-                # Continue without trainer metadata
-            except OSError as e:
-                print(f"⚠ Warning: OS error reading trainer state: {e}")
-                print(f"   Check file permissions and disk health")
-                # Continue without trainer metadata
-
-    else:
-        # Format direct: model.pt
-        metadata["checkpoint_type"] = "file"
-        if not os.path.exists(checkpoint_path):
-            raise FileNotFoundError(f"❌ Checkpoint file not found: {checkpoint_path}")
-
-        print(f"  Loading state dict from file...")
-        try:
-            state_dict = torch.load(checkpoint_path, map_location="cpu")
-        except RuntimeError as e:
-            raise RuntimeError(
-                f"Failed to load checkpoint file (PyTorch error): {e}\n"
-                f"   File may be corrupted or from incompatible PyTorch version"
-            ) from e
-        except pickle.UnpicklingError as e:
-            raise RuntimeError(
-                f"Failed to unpickle checkpoint file: {e}\n"
-                f"   File appears to be corrupted"
-            ) from e
-        except EOFError as e:
-            raise RuntimeError(
-                f"Checkpoint file is incomplete (truncated): {e}\n"
-                f"   File may have been interrupted during save"
-            ) from e
-
-        try:
-            metadata["timestamp"] = datetime.fromtimestamp(
-                os.path.getmtime(checkpoint_path)
-            ).isoformat()
-        except OSError as e:
-            print(f"⚠ Warning: Could not get file modification time: {e}")
-            metadata["timestamp"] = None
-
-    # Charger les poids
-    try:
-        model.load_state_dict(state_dict)
-        print("✓ Checkpoint loaded successfully")
-        print(f"  Loaded {len(state_dict)} parameter tensors")
-
-        # Vérifier que les poids ne sont pas random
-        first_param = next(iter(state_dict.values()))
-        param_mean = first_param.float().mean().item()
-        print(
-            "  Sanity check - first param mean: "
-            f"{_format_metric(param_mean, decimal_places=6)}"
-        )
-
-        metadata["num_parameters"] = len(state_dict)
-        metadata["first_param_mean"] = param_mean
-
-        if metadata["step"] is not None:
-            print(f"  Step: {metadata['step']}")
-        if metadata["loss"] is not None:
-            print(f"  Loss: {_format_metric(metadata['loss'])}")
-
-    except (RuntimeError, TypeError, KeyError) as e:
-        print(f"❌ Error loading state dict into model: {e}")
-        print(f"   This usually means checkpoint architecture mismatch.")
-        print(f"   Available keys in state dict: {list(state_dict.keys())[:5]}...")
-        raise RuntimeError(f"Failed to load checkpoint: {e}") from e
-
-    return model, metadata
+    return str(history_file)
 
 
+# ======================================================================
+# Benchmark Suite
+# ======================================================================
 
-def validate_generation_params(args):
-    """Valide les paramètres de génération avant utilisation.
+BENCHMARK_PROMPTS = [
+    # Simple completions
+    ("simple", "The cat sat on the"),
+    ("simple", "Hello, how are you"),
+    ("simple", "The weather today is"),
 
-    Args:
-        args: Parsed command-line arguments
+    # Knowledge queries
+    ("knowledge", "Albert Einstein was a German-born theoretical physicist who"),
+    ("knowledge", "The capital of France is"),
+    ("knowledge", "In 1969, humans first landed on the"),
 
-    Raises:
-        SystemExit: If any parameter validation fails
+    # Narrative continuation
+    ("narrative", "Once upon a time, in a land far away, there lived a"),
+    ("narrative", "The detective examined the crime scene carefully and noticed"),
+    ("narrative", "As the sun set over the mountains, she realized that"),
+
+    # Technical text
+    ("technical", "Machine learning is a subset of artificial intelligence that"),
+    ("technical", "The function takes two parameters and returns"),
+    ("technical", "To install the package, run the following command:"),
+
+    # Creative writing
+    ("creative", "The old lighthouse keeper had a secret that"),
+    ("creative", "In the year 3000, humanity discovered"),
+    ("creative", "The melody drifted through the empty streets like"),
+]
+
+
+def run_benchmark(
+    model: LLMTransformer,
+    tokenizer,
+    evaluator: GenerationEvaluator,
+    output_dir: str,
+    generation_params: Dict[str, Any],
+    device: str = "cuda",
+):
     """
-    errors = []
-    warnings = []
+    Run benchmark suite with multiple prompts.
+    """
+    print("\n" + "=" * 80)
+    print("BENCHMARK SUITE")
+    print("=" * 80 + "\n")
 
-    # Validation temperature
-    if args.temperature < 0:
-        errors.append(f"Temperature must be >= 0, got {args.temperature}")
+    results_by_category: Dict[str, List[GenerationQualityMetrics]] = {}
 
-    # Validation top_k
-    if args.top_k is not None and args.top_k < 0:
-        errors.append(f"top_k must be ≥ 0, got {args.top_k}")
+    for category, prompt in BENCHMARK_PROMPTS:
+        print(f"\n[{category.upper()}] {prompt[:50]}...")
 
-    # Validation top_p (must be strictly positive, matching generate_text validation)
-    if args.top_p is not None and not (0 < args.top_p <= 1):
-        errors.append(f"top_p must be in (0, 1] (set ≥1.0 to disable), got {args.top_p}")
-
-    # Validation max_tokens
-    if args.max_tokens <= 0:
-        errors.append(f"max_tokens must be > 0, got {args.max_tokens}")
-
-    if args.repetition_penalty is not None and args.repetition_penalty < 1.0:
-        errors.append(
-            f"repetition_penalty must be ≥ 1.0 (1.0 disables it), got {args.repetition_penalty}"
+        output_text, metrics, gen_time = generate_and_evaluate(
+            model, tokenizer, evaluator,
+            prompt, generation_params, device,
+            verbose=False,
         )
 
-    if args.no_repeat_ngram_size is not None and args.no_repeat_ngram_size < 0:
-        errors.append(
-            f"no_repeat_ngram_size must be ≥ 0 (0 disables it), got {args.no_repeat_ngram_size}"
-        )
+        if category not in results_by_category:
+            results_by_category[category] = []
+        results_by_category[category].append(metrics)
 
-    # ⚠️ NOUVEAU: Avertissement pour combinaison top_k + top_p
-    # Seulement si l'utilisateur a EXPLICITEMENT fourni les deux
-    # (pour éviter warning avec valeurs par défaut)
-    # ✅ FIX: Détecter arguments qui commencent par --top-k ou --top-p
-    #         (gère --top-k=40, --top-k 40, --top_k=40, etc.)
-    user_set_top_k = any(arg.startswith('--top-k') or arg.startswith('--top_k')
-                         for arg in sys.argv)
-    user_set_top_p = any(arg.startswith('--top-p') or arg.startswith('--top_p')
-                         for arg in sys.argv)
+        # Brief output
+        print(f"  Score: {metrics.overall_score:.1f} ({metrics.quality_grade})")
+        print(f"  PPL: {metrics.perplexity.sequence_perplexity:.2f}")
+        print(f"  Output: {metrics.generated_only[:60]}...")
 
-    if (user_set_top_k and user_set_top_p and
-        args.top_k is not None and args.top_k > 0 and
-        args.top_p is not None and args.top_p < 1.0):
-        warnings.append(
-            f"⚠️  Using both top_k={args.top_k} and top_p={args.top_p} simultaneously.\n"
-            f"    This applies BOTH filters sequentially (top_k THEN top_p).\n"
-            f"    For most use cases, using only one is recommended:\n"
-            f"    - Creative text: Use top_p=0.9 (nucleus sampling)\n"
-            f"    - Focused generation: Use top_k=40\n"
-            f"    - Greedy decoding: Set temperature=0.0 (disables both)"
-        )
+    # Summary by category
+    print("\n" + "=" * 80)
+    print("BENCHMARK SUMMARY")
+    print("=" * 80)
 
-    # Si des erreurs, afficher et quitter
-    if errors:
-        print("=" * 80)
-        print("❌ PARAMETER VALIDATION ERRORS")
-        print("=" * 80)
-        for err in errors:
-            print(f"  • {err}")
-        print("=" * 80)
-        print("\nPlease fix the parameters and try again.")
-        sys.exit(1)
+    print(f"\n{'Category':<15} {'Avg Score':<12} {'Avg PPL':<12} {'Distinct-2':<12} {'Rep-2':<10}")
+    print("-" * 60)
 
-    # Afficher les avertissements (non-bloquants)
-    if warnings:
-        print("=" * 80)
-        print("⚠️  PARAMETER WARNINGS")
-        print("=" * 80)
-        for warn in warnings:
-            print(f"  {warn}")
-        print("=" * 80)
+    all_metrics = []
+    for category, metrics_list in results_by_category.items():
+        all_metrics.extend(metrics_list)
+
+        avg_score = sum(m.overall_score for m in metrics_list) / len(metrics_list)
+        ppls = [m.perplexity.sequence_perplexity for m in metrics_list if m.perplexity.sequence_perplexity > 0]
+        avg_ppl = sum(ppls) / len(ppls) if ppls else 0
+        avg_distinct = sum(m.diversity.distinct_2 for m in metrics_list) / len(metrics_list)
+        avg_rep = sum(m.repetition.rep_2 for m in metrics_list) / len(metrics_list)
+
+        print(f"{category:<15} {avg_score:<12.1f} {avg_ppl:<12.2f} {avg_distinct:<12.3f} {avg_rep:<10.3f}")
+
+    # Overall
+    print("-" * 60)
+    overall_score = sum(m.overall_score for m in all_metrics) / len(all_metrics)
+    ppls = [m.perplexity.sequence_perplexity for m in all_metrics if m.perplexity.sequence_perplexity > 0]
+    overall_ppl = sum(ppls) / len(ppls) if ppls else 0
+    overall_distinct = sum(m.diversity.distinct_2 for m in all_metrics) / len(all_metrics)
+    overall_rep = sum(m.repetition.rep_2 for m in all_metrics) / len(all_metrics)
+
+    print(f"{'OVERALL':<15} {overall_score:<12.1f} {overall_ppl:<12.2f} {overall_distinct:<12.3f} {overall_rep:<10.3f}")
+
+    # Grade distribution
+    grades = [m.quality_grade for m in all_metrics]
+    from collections import Counter
+    grade_dist = Counter(grades)
+    print(f"\nGrade distribution: {dict(sorted(grade_dist.items()))}")
+
+    # Generate report
+    report_path = Path(output_dir) / "benchmark_report"
+    report_files = evaluator.generate_report(report_path, format="all")
+    print(f"\nReports saved to:")
+    for fmt, path in report_files.items():
+        print(f"  {fmt}: {path}")
+
+    return all_metrics
+
+
+# ======================================================================
+# History Viewer
+# ======================================================================
+
+def view_history(output_dir: str, last_n: int = 10, filter_grade: str = None):
+    """View generation history."""
+    history_file = Path(output_dir) / "generation_history.jsonl"
+
+    if not history_file.exists():
+        print(f"No history found at {history_file}")
+        return
+
+    entries = []
+    with open(history_file, "r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                entry = json.loads(line.strip())
+                entries.append(entry)
+            except json.JSONDecodeError:
+                continue
+
+    if filter_grade:
+        entries = [
+            e for e in entries
+            if e.get("evaluation", {}).get("quality_grade") == filter_grade
+        ]
+
+    entries = entries[-last_n:]
+
+    print("\n" + "=" * 80)
+    print(f"GENERATION HISTORY ({len(entries)} entries)")
+    print("=" * 80 + "\n")
+
+    for i, entry in enumerate(entries, 1):
+        eval_data = entry.get("evaluation", {})
+        score = eval_data.get("overall_score", "N/A")
+        grade = eval_data.get("quality_grade", "N/A")
+        ppl = eval_data.get("perplexity", {}).get("sequence_perplexity", "N/A")
+
+        print(f"[{i}] {entry['timestamp'][:19]}")
+        print(f"    Prompt: {entry['prompt'][:50]}...")
+        print(f"    Output: {entry['generated_text'][:60]}...")
+
+        if isinstance(score, (int, float)):
+            print(f"    Score: {score:.1f}/100 ({grade})")
+        if isinstance(ppl, (int, float)):
+            print(f"    PPL: {ppl:.2f}")
+
+        checkpoint = entry.get("checkpoint", {})
+        if checkpoint.get("step"):
+            print(f"    Checkpoint: step {checkpoint['step']}")
+
+        issues = eval_data.get("issues", [])
+        if issues:
+            print(f"    Issues: {issues[0]}")
+
         print()
 
+    # Summary stats
+    scores = [
+        e.get("evaluation", {}).get("overall_score")
+        for e in entries
+        if isinstance(e.get("evaluation", {}).get("overall_score"), (int, float))
+    ]
+
+    if scores:
+        print("=" * 80)
+        print("STATISTICS")
+        print("=" * 80)
+        print(f"Average score: {sum(scores)/len(scores):.1f}")
+        print(f"Min/Max: {min(scores):.1f} / {max(scores):.1f}")
+
+        grades = [e.get("evaluation", {}).get("quality_grade") for e in entries if e.get("evaluation", {}).get("quality_grade")]
+        grade_counts = Counter(grades)
+        print(f"Grades: {dict(sorted(grade_counts.items()))}")
+
+
+# ======================================================================
+# Interactive Mode
+# ======================================================================
+
+def interactive_mode(
+    model: LLMTransformer,
+    tokenizer,
+    evaluator: GenerationEvaluator,
+    cfg: Dict[str, Any],
+    checkpoint_info: Dict[str, Any],
+    output_dir: str,
+    device: str,
+):
+    """Interactive generation loop with evaluation."""
+    print("\n" + "=" * 60)
+    print("SLGA Interactive Generation with Quality Evaluation")
+    print("=" * 60)
+    print("Commands: /quit, /config, /eval, /report, /help")
+    print("=" * 60 + "\n")
+
+    # Get inference params
+    inf_cfg = cfg.get("inference", {})
+    gen_params = {
+        "max_new_tokens": inf_cfg.get("max_new_tokens", 100),
+        "temperature": inf_cfg.get("temperature", 0.7),
+        "top_k": inf_cfg.get("top_k", 50),
+        "top_p": inf_cfg.get("top_p", 0.9),
+        "repetition_penalty": inf_cfg.get("repetition_penalty", 1.2),
+        "no_repeat_ngram_size": inf_cfg.get("no_repeat_ngram_size", 3),
+    }
+
+    evaluate_all = False  # Toggle evaluation for each generation
+
+    while True:
+        try:
+            prompt = input("\nPrompt: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nGoodbye!")
+            break
+
+        if not prompt:
+            continue
+
+        if prompt.lower() == "/quit":
+            print("Goodbye!")
+            break
+
+        if prompt.lower() == "/config":
+            print(f"\nCurrent settings:")
+            for key, value in gen_params.items():
+                print(f"  {key}: {value}")
+            print(f"  evaluate_all: {evaluate_all}")
+            continue
+
+        if prompt.lower() == "/eval":
+            evaluate_all = not evaluate_all
+            print(f"Evaluation mode: {'ON' if evaluate_all else 'OFF'}")
+            continue
+
+        if prompt.lower() == "/report":
+            report_path = Path(output_dir) / "interactive_report"
+            files = evaluator.generate_report(report_path, format="all")
+            print("Reports generated:")
+            for fmt, path in files.items():
+                print(f"  {fmt}: {path}")
+            continue
+
+        if prompt.lower() == "/help":
+            print("\nCommands:")
+            print("  /quit   - Exit")
+            print("  /config - Show settings")
+            print("  /eval   - Toggle evaluation mode")
+            print("  /report - Generate evaluation report")
+            print("  /help   - This message")
+            continue
+
+        print("\nGenerating...", end="", flush=True)
+
+        try:
+            if evaluate_all:
+                output, metrics, gen_time = generate_and_evaluate(
+                    model, tokenizer, evaluator,
+                    prompt, gen_params, device, verbose=True
+                )
+            else:
+                output, gen_time = generate_text(
+                    model, tokenizer, prompt,
+                    device=device,
+                    **gen_params,
+                )
+                metrics = None
+                print("\r" + " " * 20 + "\r", end="")
+
+            print(f"\nOutput:\n{output}")
+
+            # Log
+            log_generation(
+                output_dir=output_dir,
+                prompt=prompt,
+                generated_text=output,
+                generation_params=gen_params,
+                model_config=cfg.get("model", {}),
+                checkpoint_info=checkpoint_info,
+                metrics=metrics,
+                generation_time=gen_time,
+                device=device,
+            )
+
+        except Exception as e:
+            print(f"\nError: {e}")
+            import traceback
+            traceback.print_exc()
+
+
+# ======================================================================
+# Main
+# ======================================================================
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate text with SLGA model")
-    parser.add_argument("--checkpoint", type=str, required=True, help="Path to checkpoint")
-    parser.add_argument("--config", type=str, default="config.yaml", help="Path to config")
-    parser.add_argument("--prompt", type=str, default="The future of AI is", help="Prompt")
-    parser.add_argument("--max-tokens", type=int, default=100, help="Max tokens to generate")
-    parser.add_argument("--temperature", type=float, default=0.6, help="Temperature")
-    parser.add_argument(
-        "--top-k",
-        type=int,
-        default=80,
-        help="Top-K filtering (use 0 to disable)",
-    )
-    parser.add_argument(
-        "--top-p",
-        type=float,
-        default=0.95,
-        help="Nucleus sampling (set ≥1.0 to disable)",
-    )
-    parser.add_argument(
-        "--repetition-penalty",
-        type=float,
-        default=1.15,
-        help="Penalty applied to previously generated tokens (1.0 disables)",
-    )
-    parser.add_argument(
-        "--no-repeat-ngram-size",
-        type=int,
-        default=4,
-        help="Ban repeated n-grams of this size (0 disables)",
-    )
-    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument(
-        "--eos-token-id",
-        type=int,
-        default=None,
-        help="EOS token ID for stopping generation (defaults to tokenizer.eos_token_id)",
-    )
+    parser = argparse.ArgumentParser(description="SLGA Text Generation with Quality Evaluation")
 
-    # ✅ FIX: Utiliser un groupe mutuellement exclusif pour --stop-on-eos / --no-stop-on-eos
-    eos_group = parser.add_mutually_exclusive_group()
-    eos_group.add_argument(
-        "--stop-on-eos",
-        dest="stop_on_eos",
-        action="store_true",
-        default=True,
-        help="Stop generation when EOS token is encountered (default)",
-    )
-    eos_group.add_argument(
-        "--no-stop-on-eos",
-        dest="stop_on_eos",
-        action="store_false",
-        help="Continue generation even after EOS token",
-    )
+    # Model arguments
+    parser.add_argument("--checkpoint", type=str, help="Checkpoint directory")
+    parser.add_argument("--config", type=str, default=None, help="Config file path")
+    parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
+
+    # Generation mode
+    parser.add_argument("--prompt", type=str, default=None, help="Input prompt")
+    parser.add_argument("--interactive", action="store_true", help="Interactive mode")
+    parser.add_argument("--benchmark", action="store_true", help="Run benchmark suite")
+    parser.add_argument("--history", type=str, help="View history from output dir")
+
+    # Generation parameters
+    parser.add_argument("--max-tokens", type=int, default=100, help="Max tokens to generate")
+    parser.add_argument("--temperature", type=float, default=0.7, help="Sampling temperature")
+    parser.add_argument("--top-k", type=int, default=50, help="Top-K sampling")
+    parser.add_argument("--top-p", type=float, default=0.9, help="Nucleus sampling")
+    parser.add_argument("--repetition-penalty", type=float, default=1.2, help="Repetition penalty")
+    parser.add_argument("--no-repeat-ngram-size", type=int, default=3, help="No repeat n-gram")
+
+    # Evaluation options
+    parser.add_argument("--evaluate", action="store_true", help="Evaluate generation quality")
+    parser.add_argument("--output-dir", type=str, default=None, help="Output directory for logs")
+    parser.add_argument("--no-log", action="store_true", help="Disable logging")
+
+    # History options
+    parser.add_argument("--last", type=int, default=10, help="Show last N history entries")
+    parser.add_argument("--filter-grade", type=str, help="Filter history by grade (A/B/C/D/F)")
 
     args = parser.parse_args()
 
-    # Validate generation parameters before proceeding
-    validate_generation_params(args)
+    # View history mode
+    if args.history:
+        view_history(args.history, args.last, args.filter_grade)
+        return
 
-    # Load config
-    try:
-        with open(args.config) as f:
-            cfg = yaml.safe_load(f)
-    except FileNotFoundError:
-        print(f"❌ Config file not found: {args.config}")
-        print(f"   Please provide a valid config file with --config")
-        sys.exit(1)
-    except yaml.YAMLError as e:
-        print(f"❌ Error parsing config file: {e}")
-        sys.exit(1)
-    
-    print("=" * 80)
-    print("=== SLGA Text Generation (FIXED VERSION) ===")
-    print("=" * 80)
-    print(f"Config: {args.config}")
-    print(f"Checkpoint: {args.checkpoint}")
-    print(f"Device: {args.device}")
-    print()
-    
-    # Tokenizer
-    print("Loading tokenizer...")
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(cfg["tokenizer"])
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-        print("✓ Tokenizer loaded")
-        print()
-    except (OSError, ValueError, KeyError) as e:
-        print(f"❌ Error loading tokenizer '{cfg.get('tokenizer', 'N/A')}': {e}")
-        print(f"   Check that tokenizer name is correct in config file")
-        sys.exit(1)
+    # Need checkpoint for generation
+    if not args.checkpoint:
+        parser.error("--checkpoint is required for generation (or use --history)")
 
-    # ✅ FIX Bug #31: Gérer vocab_size: null dans config
-    # Si vocab_size est null, utiliser la taille du tokenizer
-    # IMPORTANT: Use len(tokenizer) not tokenizer.vocab_size to account for special tokens
-    if cfg["model"].get("vocab_size") is None:
-        if hasattr(tokenizer, '__len__'):
-            actual_vocab_size = len(tokenizer)
-            cfg["model"]["vocab_size"] = actual_vocab_size
-            print(f"ℹ️  vocab_size was null, using len(tokenizer): {actual_vocab_size}")
-            if hasattr(tokenizer, 'vocab_size') and tokenizer.vocab_size != actual_vocab_size:
-                print(f"   Note: tokenizer.vocab_size={tokenizer.vocab_size}, but len(tokenizer)={actual_vocab_size}")
-        elif hasattr(tokenizer, 'vocab_size') and tokenizer.vocab_size is not None:
-            cfg["model"]["vocab_size"] = tokenizer.vocab_size
-            print(f"⚠️  Warning: Using tokenizer.vocab_size={tokenizer.vocab_size} (len() not available)")
-        else:
-            print(f"⚠️  Warning: vocab_size is null and tokenizer size unavailable")
-            print(f"   Using default: 50257 (GPT-2)")
-            cfg["model"]["vocab_size"] = 50257
+    # Check device
+    if args.device == "cuda" and not torch.cuda.is_available():
+        print("CUDA not available, using CPU")
+        args.device = "cpu"
 
-    # Create model
-    print("Creating model...")
-    try:
-        model_cfg = Config(**cfg["model"])
-        model = LLMTransformer(model_cfg)
-        print(f"✓ Model created: {model.get_num_params() / 1e6:.2f}M parameters")
-        print()
-    except (TypeError, KeyError, ValueError) as e:
-        print(f"❌ Error creating model from config: {e}")
-        print(f"   Check model configuration in {args.config}")
-        print(f"   Available config keys: {list(cfg.get('model', {}).keys())}")
-        sys.exit(1)
-    
-    # Load checkpoint (CORRECTED!)
-    try:
-        model, checkpoint_metadata = load_checkpoint(args.checkpoint, model)
-        print()
-    except FileNotFoundError as e:
-        print(f"❌ {e}")
-        sys.exit(1)
-    except RuntimeError as e:
-        print(f"❌ {e}")
-        sys.exit(1)
+    # Load model
+    print(f"Loading model from {args.checkpoint}...")
+    model, tokenizer, cfg = load_model(args.checkpoint, args.config, args.device)
+    print(f"Model loaded ({model.get_num_params()/1e6:.1f}M params)")
 
-    try:
-        model = model.to(args.device)
-        model.eval()
-    except RuntimeError as e:
-        print(f"❌ Error moving model to device '{args.device}': {e}")
-        print(f"   Available CUDA devices: {torch.cuda.device_count()}")
-        if args.device == "cuda" and not torch.cuda.is_available():
-            print(f"   CUDA is not available. Try --device cpu")
-        sys.exit(1)
+    if args.device == "cuda":
+        mem = torch.cuda.memory_allocated() / 1e9
+        print(f"GPU memory: {mem:.2f} GB")
 
-    # Generation settings
-    print("Generation settings:")
-    print(f"  Max tokens: {args.max_tokens}")
-    print(f"  Temperature: {args.temperature}")
-    print(f"  Top-K: {args.top_k if args.top_k > 0 else 'disabled'}")
-    print(
-        f"  Top-P: {args.top_p if args.top_p is not None and args.top_p < 1.0 else 'disabled'}"
-    )
-    print(
-        "  Repetition penalty: "
-        f"{args.repetition_penalty if args.repetition_penalty and args.repetition_penalty > 1.0 else 'disabled'}"
-    )
-    print(
-        "  No-repeat n-gram: "
-        f"{args.no_repeat_ngram_size if args.no_repeat_ngram_size and args.no_repeat_ngram_size > 0 else 'disabled'}"
-    )
-    print()
+    # Get checkpoint info
+    checkpoint_info = get_checkpoint_info(args.checkpoint)
 
-    # Déterminer l'EOS token ID
-    eos_token_id = args.eos_token_id if args.eos_token_id is not None else tokenizer.eos_token_id
+    # Output directory
+    output_dir = args.output_dir or os.path.dirname(args.checkpoint) or "out_slga"
 
-    # Log EOS configuration
-    print(f"EOS token configuration:")
-    print(f"  Token ID: {eos_token_id}")
-    print(f"  Stop on EOS: {args.stop_on_eos}")
-    if eos_token_id is not None:
-        try:
-            eos_token_str = tokenizer.decode([eos_token_id])
-            print(f"  Token string: '{eos_token_str}'")
-        except Exception:
-            print(f"  Token string: [unable to decode]")
-    print()
-
-    # ⚠️ Log explicite si top_k + top_p sont utilisés ensemble
-    # (seulement si explicitement fournis par l'utilisateur)
-    # ✅ FIX: Détecter arguments qui commencent par --top-k ou --top-p
-    user_set_top_k = any(arg.startswith('--top-k') or arg.startswith('--top_k')
-                         for arg in sys.argv)
-    user_set_top_p = any(arg.startswith('--top-p') or arg.startswith('--top_p')
-                         for arg in sys.argv)
-
-    if (user_set_top_k and user_set_top_p and
-        args.top_k is not None and args.top_k > 0 and
-        args.top_p is not None and args.top_p < 1.0):
-        print("⚠️  NOTE: Using BOTH top_k and top_p filtering")
-        print(f"   Sampling will apply: top_k={args.top_k} THEN top_p={args.top_p}")
-        print(f"   This may result in very restrictive sampling.")
-        print()
-
-    # Generate
-    print("=" * 80)
-    print(f"PROMPT: {args.prompt}")
-    print("=" * 80)
-    print()
-
-    generation_start = datetime.now()
-    try:
-        output = generate_text(
-            model,
-            tokenizer,
-            args.prompt,
-            max_new_tokens=args.max_tokens,
-            temperature=args.temperature,
-            top_k=args.top_k if args.top_k > 0 else None,
-            top_p=args.top_p if args.top_p is not None and args.top_p < 1.0 else None,
-            repetition_penalty=args.repetition_penalty,
-            no_repeat_ngram_size=(
-                None
-                if args.no_repeat_ngram_size in (None, 0)
-                else args.no_repeat_ngram_size
-            ),
-            eos_token_id=eos_token_id,
-            stop_on_eos=args.stop_on_eos,
-            device=args.device,
-        )
-        generation_time = (datetime.now() - generation_start).total_seconds()
-    except RuntimeError as e:
-        print(f"\n❌ Error during text generation: {e}")
-        if "out of memory" in str(e).lower():
-            print(f"   GPU out of memory. Try:")
-            print(f"   - Reducing --max-tokens")
-            print(f"   - Using --device cpu")
-            print(f"   - Reducing model size")
-        sys.exit(1)
-    except (ValueError, IndexError) as e:
-        print(f"\n❌ Error during generation: {e}")
-        print(f"   Check generation parameters (temperature, top_k, top_p)")
-        sys.exit(1)
-
-    print("=" * 80)
-    print("GENERATED TEXT:")
-    print("=" * 80)
-    print(output)
-    print("=" * 80)
-
-    # Préparer métadonnées complètes
-    generation_metadata = {
-        "timestamp": datetime.now().isoformat(),
-        "prompt": args.prompt,
-        "generated_text": output,
-        "generation_params": {
-            "max_tokens": args.max_tokens,
-            "temperature": args.temperature,
-            "top_k": args.top_k if args.top_k > 0 else None,
-            "top_p": args.top_p if args.top_p is not None and args.top_p < 1.0 else None,
-            "repetition_penalty": args.repetition_penalty,
-            "no_repeat_ngram_size": (
-                None
-                if args.no_repeat_ngram_size in (None, 0)
-                else args.no_repeat_ngram_size
-            ),
-        },
-        "model_config": cfg["model"],
-        "checkpoint": checkpoint_metadata,
-        "device": args.device,
-        "generation_time_seconds": generation_time,
-        "model_params_millions": model.get_num_params() / 1e6,
+    # Generation parameters
+    gen_params = {
+        "max_new_tokens": args.max_tokens,
+        "temperature": args.temperature,
+        "top_k": args.top_k,
+        "top_p": args.top_p,
+        "repetition_penalty": args.repetition_penalty,
+        "no_repeat_ngram_size": args.no_repeat_ngram_size,
     }
 
-    # Save avec métadonnées complètes
-    try:
-        output_dir = cfg["save"]["out_dir"]
-    except KeyError as e:
-        print(f"\n⚠ Warning: 'save.out_dir' not found in config: {e}")
-        output_dir = "."
-        print(f"   Using current directory: {output_dir}")
+    # Create evaluator
+    evaluator = GenerationEvaluator(model, tokenizer, args.device)
 
-    try:
-        os.makedirs(output_dir, exist_ok=True)
-    except PermissionError as e:
-        print(f"\n❌ Error: No permission to create directory '{output_dir}': {e}")
-        output_dir = "."
-        print(f"   Falling back to current directory")
-        try:
-            os.makedirs(output_dir, exist_ok=True)
-        except Exception as e:
-            print(f"❌ Fatal: Cannot create any output directory: {e}")
-            sys.exit(1)
-    except OSError as e:
-        print(f"\n❌ Error: OS error creating directory '{output_dir}': {e}")
-        print(f"   Check disk space and path validity")
-        output_dir = "."
-        print(f"   Falling back to current directory")
+    # Run mode
+    if args.benchmark:
+        run_benchmark(
+            model, tokenizer, evaluator,
+            output_dir, gen_params, args.device
+        )
 
-    # 1. Fichier unique avec timestamp
-    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-    step_str = (
-        f"_step{checkpoint_metadata['step']}"
-        if checkpoint_metadata['step'] is not None
-        else ""
-    )
-    unique_output_path = os.path.join(
-        output_dir,
-        f"generation_{timestamp_str}{step_str}.txt"
-    )
+    elif args.interactive:
+        interactive_mode(
+            model, tokenizer, evaluator, cfg,
+            checkpoint_info, output_dir, args.device
+        )
 
-    try:
-        with open(unique_output_path, "w", encoding="utf-8") as f:
-            f.write("=" * 80 + "\n")
-            f.write("SLGA GENERATION LOG\n")
-            f.write("=" * 80 + "\n\n")
+    elif args.prompt:
+        print(f"\nPrompt: {args.prompt}")
+        print("Generating...")
 
-            f.write(f"Timestamp: {generation_metadata['timestamp']}\n")
-            f.write(f"Generation time: {generation_time:.2f}s\n\n")
-
-            f.write("--- CHECKPOINT INFO ---\n")
-            f.write(f"Path: {checkpoint_metadata['checkpoint_path']}\n")
-            if checkpoint_metadata['step'] is not None:
-                f.write(f"Step: {checkpoint_metadata['step']}\n")
-            if checkpoint_metadata['loss'] is not None:
-                f.write(f"Loss: {_format_metric(checkpoint_metadata['loss'])}\n")
-            if checkpoint_metadata['timestamp']:
-                f.write(f"Checkpoint saved: {checkpoint_metadata['timestamp']}\n")
-            f.write(f"Parameters: {checkpoint_metadata['num_parameters']} tensors\n")
-            f.write(
-                "First param mean: "
-                f"{_format_metric(checkpoint_metadata['first_param_mean'], decimal_places=6)}\n\n"
+        if args.evaluate:
+            output, metrics, gen_time = generate_and_evaluate(
+                model, tokenizer, evaluator,
+                args.prompt, gen_params, args.device,
+                verbose=True,
             )
-
-            f.write("--- MODEL CONFIG ---\n")
-            for key, value in cfg["model"].items():
-                f.write(f"{key}: {value}\n")
-            f.write(f"\nTotal parameters: {model.get_num_params() / 1e6:.2f}M\n\n")
-
-            f.write("--- GENERATION PARAMS ---\n")
-            f.write(f"Temperature: {args.temperature}\n")
-            f.write(f"Top-K: {args.top_k if args.top_k > 0 else 'disabled'}\n")
-            f.write(
-                f"Top-P: {args.top_p if args.top_p is not None and args.top_p < 1.0 else 'disabled'}\n"
+        else:
+            output, gen_time = generate_text(
+                model, tokenizer, args.prompt,
+                device=args.device,
+                **gen_params,
             )
-            f.write(
-                "Repetition penalty: "
-                f"{args.repetition_penalty if args.repetition_penalty and args.repetition_penalty > 1.0 else 'disabled'}\n"
+            metrics = None
+
+        print(f"\nOutput:\n{output}")
+
+        # Log
+        if not args.no_log:
+            log_file = log_generation(
+                output_dir=output_dir,
+                prompt=args.prompt,
+                generated_text=output,
+                generation_params=gen_params,
+                model_config=cfg.get("model", {}),
+                checkpoint_info=checkpoint_info,
+                metrics=metrics,
+                generation_time=gen_time,
+                device=args.device,
             )
-            f.write(
-                "No-repeat n-gram: "
-                f"{args.no_repeat_ngram_size if args.no_repeat_ngram_size and args.no_repeat_ngram_size > 0 else 'disabled'}\n"
-            )
-            f.write(f"Max tokens: {args.max_tokens}\n")
-            f.write(f"Device: {args.device}\n\n")
+            print(f"\nLogged to {log_file}")
 
-            f.write("=" * 80 + "\n")
-            f.write(f"PROMPT:\n{args.prompt}\n")
-            f.write("=" * 80 + "\n\n")
-
-            f.write("=" * 80 + "\n")
-            f.write(f"GENERATED TEXT:\n{output}\n")
-            f.write("=" * 80 + "\n")
-    except PermissionError as e:
-        print(f"\n❌ Error: No permission to write file '{unique_output_path}': {e}")
-        sys.exit(1)
-    except OSError as e:
-        print(f"\n❌ Error: OS error writing file '{unique_output_path}': {e}")
-        print(f"   Check disk space and path validity")
-        sys.exit(1)
-    except UnicodeEncodeError as e:
-        print(f"\n❌ Error: Encoding error writing file: {e}")
-        print(f"   Generated text contains characters that cannot be encoded")
-        sys.exit(1)
-
-    # 2. Log centralisé (append mode)
-    log_path = os.path.join(output_dir, "generation_history.jsonl")
-    try:
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(generation_metadata, ensure_ascii=False) + "\n")
-    except PermissionError as e:
-        print(f"\n⚠ Warning: No permission to write history log '{log_path}': {e}")
-        print(f"   Generation completed but history not logged")
-    except OSError as e:
-        print(f"\n⚠ Warning: OS error writing history log '{log_path}': {e}")
-        print(f"   Generation completed but history not logged")
-    except (TypeError, ValueError) as e:
-        print(f"\n⚠ Warning: Error serializing metadata to JSON: {e}")
-        print(f"   Generation completed but history not logged")
-
-    # 3. Fichier legacy pour compatibilité
-    legacy_path = os.path.join(output_dir, "generated_sample.txt")
-    try:
-        with open(legacy_path, "w", encoding="utf-8") as f:
-            f.write(output)
-    except PermissionError as e:
-        print(f"\n⚠ Warning: No permission to write legacy file '{legacy_path}': {e}")
-    except OSError as e:
-        print(f"\n⚠ Warning: OS error writing legacy file '{legacy_path}': {e}")
-    except UnicodeEncodeError as e:
-        print(f"\n⚠ Warning: Encoding error writing legacy file: {e}")
-
-    print(f"\n✓ Output saved to:")
-    print(f"  - Full log: {unique_output_path}")
-    if os.path.exists(log_path):
-        print(f"  - History: {log_path}")
-    if os.path.exists(legacy_path):
-        print(f"  - Quick view: {legacy_path}")
+    else:
+        print("Please provide --prompt, --interactive, --benchmark, or --history")
+        parser.print_help()
 
 
 if __name__ == "__main__":
