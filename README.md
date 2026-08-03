@@ -1,10 +1,10 @@
-# SLGA-Plus: Sparse Local-Global Attention Transformer
+# SLGA: Sparse Local-Global Attention Transformer
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-orange.svg)](https://pytorch.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**SLGA-Plus** - Implémentation complète d'un Transformer LLM avec attention sparse locale-globale pour séquences longues (optimisé RTX 3090 24GB).
+**SLGA** - Implémentation complète d'un Transformer LLM avec attention sparse locale-globale pour séquences longues (optimisé RTX 3090 24GB).
 
 ## 🎯 Caractéristiques
 
@@ -18,8 +18,8 @@
 
 ```bash
 # Cloner le projet
-git clone https://github.com/yourusername/slga-plus.git
-cd slga-plus
+git clone https://github.com/JacquesGariepy/SLGA.git
+cd slga
 
 # Créer environnement virtuel
 python3 -m venv .venv
@@ -120,16 +120,16 @@ MIT License - voir [LICENSE](LICENSE)
 
 ## 📞 Contact
 
-- Issues: [GitHub Issues](https://github.com/yourusername/slga-plus/issues)
+- Issues: [GitHub Issues](https://github.com/yourusername/slga/issues)
 - Email: your.email@example.com
 
 ## 🙏 Citation
 
 ```bibtex
 @software{slga_plus_2024,
-  title={SLGA-Plus: Efficient Sparse Local-Global Attention},
+  title={SLGA: Efficient Sparse Local-Global Attention},
   author={Your Name},
   year={2024},
-  url={https://github.com/yourusername/slga-plus}
+  url={https://github.com/JacquesGariepy/SLGA}
 }
 ```
