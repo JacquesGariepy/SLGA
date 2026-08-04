@@ -131,11 +131,11 @@ Contributions are welcome! Whether it's optimizing the CUDA kernels, adding new 
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](https://www.google.com/search?q=LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE.md) file for details.
 
 ## 📞 Contact
 
-* **Issues:** [GitHub Issues](https://www.google.com/search?q=https://github.com/JacquesGariepy/SLGA/issues)
+* **Issues:** [GitHub Issues](https://github.com/JacquesGariepy/SLGA/issues)
 * **Author:** Jacques Gariépy
 
 ## 🙏 Citation
