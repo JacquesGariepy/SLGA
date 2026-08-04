@@ -1,8 +1,8 @@
 SLGA: Sparse Local-Global Attention Transformer
 
-[![Python 3.8+] (https://img.shields.io/badge/python-3.8+-blue.svg) ] (https://www.python.org/downloads/)
-[![PyTorch] (https://img.shields.io/badge/PyTorch-2.0+-orange.svg) ] (https://pytorch.org/)
-[![License: MIT] (https://img.shields.io/badge/License-MIT-yellow.svg) ] (https://opensource.org/licenses/MIT)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)] (https://www.python.org/downloads/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-orange.svg)] (https://pytorch.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)] (https://opensource.org/licenses/MIT)
 
 **SLGA** - Complete implementation of a Transformer LLM with local-global sparse attention for long sequences (optimized RTX 3090 24GB).
 
